@@ -1,3 +1,5 @@
+import { ContactForm } from "./ContactForm";
+
 export function ContactFormView() {
   return (
     <>
@@ -152,65 +154,7 @@ export function ContactFormView() {
       </section>
 
       <section className="mx-auto max-w-3xl px-4 pb-20 sm:px-6 sm:pb-24">
-        <form
-          className="sf-contact-shell sf-fade-up sf-animate-delay-4 p-6 sm:p-8"
-          action="#"
-          method="post"
-        >
-          <div className="grid gap-5">
-            <div className="sf-field">
-              <input
-                id="contact-name"
-                name="name"
-                type="text"
-                required
-                placeholder=" "
-                className="sf-field-control h-12 px-4 text-base"
-              />
-              <label htmlFor="contact-name" className="sf-floating-label">
-                Name
-              </label>
-            </div>
-
-            <div className="sf-field">
-              <input
-                id="contact-email"
-                name="email"
-                type="email"
-                required
-                placeholder=" "
-                className="sf-field-control h-12 px-4 text-base"
-              />
-              <label htmlFor="contact-email" className="sf-floating-label">
-                Email
-              </label>
-            </div>
-
-            <div className="sf-field">
-              <textarea
-                id="contact-message"
-                name="message"
-                required
-                placeholder=" "
-                rows={6}
-                className="sf-field-control sf-field-textarea resize-y px-4 pb-4 pt-5 text-base"
-              />
-              <label htmlFor="contact-message" className="sf-floating-label">
-                Message
-              </label>
-            </div>
-
-            <button
-              type="submit"
-              className="sf-cta-glow mt-2 inline-flex h-12 items-center justify-center rounded-full px-8 text-base font-semibold text-white transition hover:scale-[1.02] active:scale-[0.98]"
-              style={{
-                background: `linear-gradient(90deg, var(--sf-accent-from), var(--sf-accent-to))`,
-              }}
-            >
-              Send Message
-            </button>
-          </div>
-        </form>
+        <ContactForm />
       </section>
 
       <section className="mx-auto max-w-6xl px-4 pb-20 sm:px-6 sm:pb-24">
