@@ -115,7 +115,8 @@ export function GetStartedView() {
     if (!meRes.ok || !me?.ok || !me.user) {
       throw new Error(me?.error || "Failed to load your account session.");
     }
-    if (me.user.emailVerified === false) {
+    const isEmailVerified = !!me.user.emailVerified;
+    if (!isEmailVerified) {
       throw new Error("Please verify your email before logging in.");
     }
     if (me.user.freeCreditsClaimed) {
@@ -127,7 +128,7 @@ export function GetStartedView() {
         uid: me.user.uid,
         fullName: me.user.fullName,
         email: me.user.email,
-        emailVerified: me.user.emailVerified !== false,
+        emailVerified: isEmailVerified,
         credits: me.user.credits,
         ...(me.user.avatarDataUrl ? { avatarDataUrl: me.user.avatarDataUrl } : {}),
         freeCreditsBlocked: me.user.freeCreditsBlocked === true,
