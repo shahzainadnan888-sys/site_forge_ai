@@ -47,6 +47,25 @@ function anchorForExternalHref(linkText: string, rawHref: string): string {
   return "#home";
 }
 
+function anchorFromHrefPath(rawHref: string): string | null {
+  try {
+    const cleaned = rawHref.trim();
+    if (!cleaned || cleaned.startsWith("#")) return null;
+    const u = cleaned.startsWith("//") ? new URL("https:" + cleaned) : new URL(cleaned, "https://placeholder.local");
+    const combined = `${u.pathname} ${u.hash}`.toLowerCase();
+    if (/\b(home|hero|welcome)\b/.test(combined)) return "#home";
+    if (/\b(skill|skills)\b/.test(combined)) return "#skills";
+    if (/\b(feature|features|service|services)\b/.test(combined)) return "#features";
+    if (/\babout|story|bio\b/.test(combined)) return "#about";
+    if (/\b(project|projects|portfolio|work)\b/.test(combined)) return "#projects";
+    if (/\b(pricing|price|plan|plans)\b/.test(combined)) return "#pricing";
+    if (/\b(contact|reach|get-in-touch|getintouch)\b/.test(combined)) return "#contact";
+    return null;
+  } catch {
+    return null;
+  }
+}
+
 export function enforceSinglePageAnchors(html: string): string {
   let output = html.replace(/<base\b[^>]*>/gi, "");
   output = output.replace(/\bhref=(["'])\/[^"']*\1/gi, 'href="#home"');
@@ -75,6 +94,7 @@ export function enforceSinglePageAnchors(html: string): string {
       const textLower = text.toLowerCase();
       const mapped = LABEL_TO_ANCHOR[textLower];
       const normalizedHref = String(href || "").trim().toLowerCase();
+      const fromHref = anchorFromHrefPath(String(href || ""));
       if (normalizedHref.startsWith("mailto:") || normalizedHref.startsWith("tel:")) {
         return full;
       }
@@ -85,11 +105,14 @@ export function enforceSinglePageAnchors(html: string): string {
       const isExternal = /^https?:\/\//i.test(normalizedHref) || normalizedHref.startsWith("//");
 
       if (isExternal) {
-        const dest = mapped || anchorForExternalHref(text, String(href));
+        const dest = mapped || fromHref || anchorForExternalHref(text, String(href));
         return `<a${pre}href="${dest}"${post}>${inner}</a>`;
       }
       if (mapped) {
         return `<a${pre}href="${mapped}"${post}>${inner}</a>`;
+      }
+      if (fromHref) {
+        return `<a${pre}href="${fromHref}"${post}>${inner}</a>`;
       }
       if (!isHash) {
         return `<a${pre}href="#home"${post}>${inner}</a>`;
@@ -156,6 +179,20 @@ function isExternalUrl(href){
   if(/^mailto:/i.test(href)||/^tel:/i.test(href)||/^javascript:/i.test(href))return false;
   return /^https?:\\/\\//i.test(href)||href.slice(0,2)==='//';
 }
+function idFromHref(href){
+  var h=(href||'').trim().toLowerCase();
+  if(!h)return '';
+  if(h.charAt(0)==='#'){return h.slice(1).split('?')[0];}
+  if(/mailto:|tel:|javascript:/i.test(h))return '';
+  if(/\\b(home|hero|welcome)\\b/.test(h))return 'home';
+  if(/\\b(skill|skills)\\b/.test(h))return 'skills';
+  if(/\\b(feature|features|service|services)\\b/.test(h))return 'features';
+  if(/\\babout|story|bio\\b/.test(h))return 'about';
+  if(/\\b(project|projects|portfolio|work)\\b/.test(h))return 'projects';
+  if(/\\b(pricing|price|plan|plans)\\b/.test(h))return 'pricing';
+  if(/\\b(contact|reach|get-in-touch|getintouch)\\b/.test(h))return 'contact';
+  return '';
+}
 function sameApp(href){
   if(!href)return true;
   if(href.charAt(0)==='#')return false;
@@ -175,6 +212,10 @@ links.forEach(function(a){
   var href=(a.getAttribute('href')||'').trim();
   var label=textOf(a).toLowerCase();
   var id=map[label];
+  if(!id){
+    var fromHref=idFromHref(href);
+    if(fromHref)id=fromHref;
+  }
   if(!id&&href.charAt(0)==='#'){var h0=href.slice(1).split('?')[0];if(h0)id=h0;}
   if(!id&&label){for(var k in map){if(map.hasOwnProperty(k)&&k.length>0&&(label===k||label.indexOf(k)!==-1)){id=map[k];break;}}}
   if(isExternalUrl(href)){

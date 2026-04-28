@@ -3,45 +3,96 @@ import type { DocumentReference, Transaction } from "firebase-admin/firestore";
 import { getFirestore } from "firebase-admin/firestore";
 import { getTrustedClientIp } from "@/lib/security/client-ip";
 
-const GRANTS_COLLECTION = "siteforgeFreeCreditGrants";
-const ID_PREFIX = "sffc_v1";
+const DEVICE_LOG_COLLECTION = "device_free_credit_log";
+const ID_PREFIX = "sfdc_v1";
+
+export type DeviceContext = {
+  timezone?: string;
+  screen?: string;
+  platform?: string;
+  userAgent?: string;
+};
 
 function hashPart(value: string): string {
   return createHash("sha256").update(value, "utf8").digest("hex").slice(0, 40);
 }
 
-/** Firestore document id for the signup IP (hashed; no raw IP stored in id beyond hash). */
-function freeCreditIpGrantId(clientIp: string): string {
-  return `${ID_PREFIX}_ip_${hashPart(clientIp || "unknown")}`;
+function normalizePart(value: unknown): string {
+  if (typeof value !== "string") return "";
+  return value.trim().toLowerCase().slice(0, 300);
+}
+
+function makeRawDeviceFingerprint(input: {
+  clientIp: string;
+  userAgent: string;
+  timezone: string;
+  screen: string;
+  platform: string;
+}) {
+  return [
+    normalizePart(input.clientIp || "unknown"),
+    normalizePart(input.userAgent || "unknown"),
+    normalizePart(input.timezone || "unknown"),
+    normalizePart(input.screen || "unknown"),
+    normalizePart(input.platform || "unknown"),
+  ].join("|");
+}
+
+export function buildDeviceFingerprint(args: {
+  request: Request;
+  deviceContext?: DeviceContext;
+}): string {
+  const clientIp = getRequestClientIp(args.request);
+  const uaFromHeader = args.request.headers.get("user-agent") || "";
+  const userAgent = args.deviceContext?.userAgent?.trim() || uaFromHeader;
+  const timezone = args.deviceContext?.timezone?.trim() || "unknown";
+  const screen = args.deviceContext?.screen?.trim() || "unknown";
+  const platform = args.deviceContext?.platform?.trim() || "unknown";
+  const raw = makeRawDeviceFingerprint({
+    clientIp,
+    userAgent,
+    timezone,
+    screen,
+    platform,
+  });
+  return `${ID_PREFIX}_${hashPart(raw)}`;
+}
+
+function freeCreditDeviceRef(deviceFingerprint: string): DocumentReference {
+  const db = getFirestore();
+  return db.collection(DEVICE_LOG_COLLECTION).doc(deviceFingerprint);
 }
 
 export function getRequestClientIp(request: Request): string {
   return getTrustedClientIp(request);
 }
 
-/**
- * If this IP has already been used to grant a free-credit signup, block another grant.
- * Server-trusted IP only (see getTrustedClientIp).
- */
-export async function shouldBlockFreeCreditsInTransaction(
+export async function isDeviceAlreadyClaimedInTransaction(
   tx: Transaction,
-  clientIp: string
+  deviceFingerprint: string
 ): Promise<boolean> {
-  const db = getFirestore();
-  const ref: DocumentReference = db.collection(GRANTS_COLLECTION).doc(
-    freeCreditIpGrantId(clientIp)
-  );
+  const ref = freeCreditDeviceRef(deviceFingerprint);
   const snap = await tx.get(ref);
   return snap.exists;
 }
 
-export function writeFreeCreditGrants(
+export function writeDeviceFreeCreditLog(
   tx: Transaction,
+  deviceFingerprint: string,
   uid: string,
-  clientIp: string
+  freeCreditsGiven: boolean
 ): void {
-  const db = getFirestore();
   const now = Date.now();
-  const payload = { userId: uid, createdAt: now };
-  tx.set(db.collection(GRANTS_COLLECTION).doc(freeCreditIpGrantId(clientIp)), payload);
+  tx.set(
+    freeCreditDeviceRef(deviceFingerprint),
+    {
+      id: deviceFingerprint,
+      deviceFingerprint,
+      firstUserId: uid,
+      freeCreditsGiven,
+      createdAt: now,
+      updatedAt: now,
+    },
+    { merge: true }
+  );
 }

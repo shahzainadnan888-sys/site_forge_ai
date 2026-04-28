@@ -1,11 +1,14 @@
 "use client";
 
 import { useRouter } from "next/navigation";
+import { useSearchParams } from "next/navigation";
 import { useState } from "react";
 import {
   createUserWithEmailAndPassword,
   GoogleAuthProvider,
   browserLocalPersistence,
+  sendEmailVerification,
+  signOut,
   signInWithEmailAndPassword,
   setPersistence,
   signInWithRedirect,
@@ -29,6 +32,7 @@ type MeResponse = {
     uid: string;
     fullName: string;
     email: string;
+    emailVerified?: boolean;
     credits: number;
     avatarDataUrl?: string;
     freeCreditsClaimed?: boolean;
@@ -36,6 +40,20 @@ type MeResponse = {
   };
   error?: string;
 };
+
+function readDeviceContext() {
+  if (typeof window === "undefined") return {};
+  const screenValue =
+    typeof window.screen?.width === "number" && typeof window.screen?.height === "number"
+      ? `${window.screen.width}x${window.screen.height}`
+      : "";
+  return {
+    timezone: Intl.DateTimeFormat().resolvedOptions().timeZone || "",
+    screen: screenValue,
+    platform: navigator.platform || "",
+    userAgent: navigator.userAgent || "",
+  };
+}
 
 function GoogleMark() {
   return (
@@ -67,6 +85,7 @@ function GoogleMark() {
 
 export function GetStartedView() {
   const router = useRouter();
+  const searchParams = useSearchParams();
   const [tab, setTab] = useState<AuthTab>("signin");
   const [busyEmail, setBusyEmail] = useState(false);
   const [busyGoogle, setBusyGoogle] = useState(false);
@@ -75,13 +94,17 @@ export function GetStartedView() {
   const [password, setPassword] = useState("");
   const [fullName, setFullName] = useState("");
   const [confirmPassword, setConfirmPassword] = useState("");
+  const [info, setInfo] = useState("");
+  const [showResendVerification, setShowResendVerification] = useState(false);
+  const [busyResendVerification, setBusyResendVerification] = useState(false);
   const SESSION_KEY = "siteforge-session";
+  const entryMessage = searchParams.get("message")?.trim() || "";
 
   const establishSession = async (idToken: string) => {
     const sessionRes = await fetch("/api/auth/session", {
       method: "POST",
       headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ idToken }),
+      body: JSON.stringify({ idToken, deviceContext: readDeviceContext() }),
     });
     if (!sessionRes.ok) {
       const details = (await sessionRes.json().catch(() => null)) as { error?: string } | null;
@@ -92,6 +115,9 @@ export function GetStartedView() {
     if (!meRes.ok || !me?.ok || !me.user) {
       throw new Error(me?.error || "Failed to load your account session.");
     }
+    if (me.user.emailVerified === false) {
+      throw new Error("Please verify your email before logging in.");
+    }
     if (me.user.freeCreditsClaimed) {
       setLocalStorageFreeCreditsClaimed();
     }
@@ -101,6 +127,7 @@ export function GetStartedView() {
         uid: me.user.uid,
         fullName: me.user.fullName,
         email: me.user.email,
+        emailVerified: me.user.emailVerified !== false,
         credits: me.user.credits,
         ...(me.user.avatarDataUrl ? { avatarDataUrl: me.user.avatarDataUrl } : {}),
         freeCreditsBlocked: me.user.freeCreditsBlocked === true,
@@ -113,6 +140,8 @@ export function GetStartedView() {
   const handleGoogle = async () => {
     setBusyGoogle(true);
     setError("");
+    setInfo("");
+    setShowResendVerification(false);
 
     try {
       const auth = firebase.auth;
@@ -152,6 +181,8 @@ export function GetStartedView() {
   const handleEmailAuth = async () => {
     setBusyEmail(true);
     setError("");
+    setInfo("");
+    setShowResendVerification(false);
     try {
       const auth = firebase.auth;
       if (!auth) throw new Error("Firebase auth not initialized. Check your env keys.");
@@ -168,12 +199,21 @@ export function GetStartedView() {
         if (password !== confirmPassword) throw new Error("Passwords do not match.");
         const credential = await createUserWithEmailAndPassword(auth, cleanEmail, password);
         await updateProfile(credential.user, { displayName: fullName.trim() });
-        const idToken = await credential.user.getIdToken(true);
-        await establishSession(idToken);
+        await sendEmailVerification(credential.user);
+        await signOut(auth);
+        setTab("signin");
+        setInfo("Verification email sent. Please verify your email before logging in.");
+        setShowResendVerification(true);
         return;
       }
 
       const credential = await signInWithEmailAndPassword(auth, cleanEmail, password);
+      if (!credential.user.emailVerified) {
+        await signOut(auth);
+        setError("Please verify your email before logging in.");
+        setShowResendVerification(true);
+        return;
+      }
       const idToken = await credential.user.getIdToken();
       await establishSession(idToken);
     } catch (e) {
@@ -192,6 +232,30 @@ export function GetStartedView() {
       else setError(err?.message || "Unable to continue with email/password.");
     } finally {
       setBusyEmail(false);
+    }
+  };
+
+  const handleResendVerification = async () => {
+    if (busyResendVerification) return;
+    setBusyResendVerification(true);
+    setError("");
+    setInfo("");
+    try {
+      const auth = firebase.auth;
+      if (!auth) throw new Error("Firebase auth not initialized. Check your env keys.");
+      const cleanEmail = email.trim();
+      if (!cleanEmail || !password.trim()) {
+        throw new Error("Enter your email and password first, then resend verification.");
+      }
+      const credential = await signInWithEmailAndPassword(auth, cleanEmail, password);
+      await sendEmailVerification(credential.user);
+      await signOut(auth);
+      setInfo("Verification email sent. Check your inbox.");
+    } catch (e) {
+      const err = e as FirebaseLoginError;
+      setError(err?.message || "Could not resend verification email.");
+    } finally {
+      setBusyResendVerification(false);
     }
   };
 
@@ -345,6 +409,11 @@ export function GetStartedView() {
                     ? "Sign in to continue to your account."
                     : "Create your account instantly with Google."}
                 </p>
+                {entryMessage ? (
+                  <p className="mt-3 text-sm" style={{ color: "var(--sf-accent-from)" }}>
+                    {entryMessage}
+                  </p>
+                ) : null}
                 {tab === "signup" && (
                   <input
                     type="text"
@@ -405,6 +474,22 @@ export function GetStartedView() {
                     {error}
                   </p>
                 )}
+                {info ? (
+                  <p className="mt-3 text-sm" style={{ color: "var(--sf-accent-from)" }}>
+                    {info}
+                  </p>
+                ) : null}
+                {showResendVerification ? (
+                  <button
+                    type="button"
+                    onClick={handleResendVerification}
+                    disabled={busyResendVerification}
+                    className="mt-3 inline-flex h-10 w-full items-center justify-center rounded-xl border px-4 text-sm font-semibold transition hover:opacity-95 disabled:cursor-not-allowed disabled:opacity-65"
+                    style={{ borderColor: "var(--sf-border)", color: "var(--sf-text)" }}
+                  >
+                    {busyResendVerification ? "Resending..." : "Resend verification email"}
+                  </button>
+                ) : null}
               </div>
             </div>
           </div>

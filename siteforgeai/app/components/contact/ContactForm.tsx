@@ -7,12 +7,14 @@ const SUPPORT_EMAIL = "support@buildwithsiteforge.com";
 export function ContactForm() {
   const [status, setStatus] = useState<"idle" | "loading" | "success" | "error">("idle");
   const [errorMessage, setErrorMessage] = useState("");
+  const [successMessage, setSuccessMessage] = useState("");
 
   async function handleSubmit(e: React.FormEvent<HTMLFormElement>) {
     e.preventDefault();
     if (status === "loading") return;
     setStatus("loading");
     setErrorMessage("");
+    setSuccessMessage("");
     const form = e.currentTarget;
     const fd = new FormData(form);
     const name = String(fd.get("name") ?? "").trim();
@@ -25,13 +27,14 @@ export function ContactForm() {
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ name, email, message }),
       });
-      const data = (await r.json()) as { ok?: boolean; error?: string };
+      const data = (await r.json()) as { ok?: boolean; error?: string; message?: string };
       if (!r.ok || !data.ok) {
         setStatus("error");
         setErrorMessage(data.error || "Something went wrong.");
         return;
       }
       setStatus("success");
+      setSuccessMessage(data.message || "Email sent successfully.");
       form.reset();
     } catch {
       setStatus("error");
@@ -48,6 +51,7 @@ export function ContactForm() {
       onInput={() => {
         if (status === "success") {
           setStatus("idle");
+          setSuccessMessage("");
         }
       }}
     >
@@ -101,7 +105,7 @@ export function ContactForm() {
 
         {status === "success" ? (
           <p className="text-sm" style={{ color: "var(--sf-accent-from)" }}>
-            Message sent. We will reply to you at the email you provided.
+            {successMessage || "Email sent successfully."}
           </p>
         ) : null}
 

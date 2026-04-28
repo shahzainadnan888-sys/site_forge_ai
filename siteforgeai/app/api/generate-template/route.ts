@@ -1,5 +1,5 @@
 import { NextResponse } from "next/server";
-import { requireCurrentServerUser } from "@/lib/auth/current-user";
+import { requireVerifiedServerUser } from "@/lib/auth/current-user";
 import { refundServerCredits, spendServerCredits } from "@/lib/auth/user-store";
 import { isMultiPageWebsiteRequest, MULTI_PAGE_NOT_ALLOWED } from "@/lib/generate-prompt-guards";
 import { assertSameOrigin, CsrfError } from "@/lib/security/csrf";
@@ -76,19 +76,23 @@ export async function POST(req: Request) {
 
   try {
     assertSameOrigin(req);
-    const currentUser = await requireCurrentServerUser();
+    const currentUser = await requireVerifiedServerUser();
     enforceRateLimit(req, "generate-template", { limit: 12, windowMs: 60_000, userId: currentUser.uid });
     enforceRateLimitByIp(req, "generate-template-ip", { limit: 24, windowMs: 60_000 });
-    const body = (await req.json()) as { prompt?: string; turnstileToken?: string };
+    const body = (await req.json()) as { prompt?: string; turnstileToken?: string; referenceImageDataUrl?: string };
     const turnstile = await verifyTurnstileIfConfigured(body?.turnstileToken);
     if (!turnstile.ok) {
       logSecurityEvent(req, "turnstile_failed", { route: "generate-template" });
       return NextResponse.json({ ok: false, error: turnstile.error }, { status: 403 });
     }
     const prompt = body?.prompt?.trim();
+    const referenceImageDataUrl = typeof body?.referenceImageDataUrl === "string" ? body.referenceImageDataUrl.trim() : "";
 
     if (!prompt) {
       return NextResponse.json({ ok: false, error: "Prompt is required." }, { status: 400 });
+    }
+    if (referenceImageDataUrl && !/^data:image\/[a-zA-Z0-9.+-]+;base64,/.test(referenceImageDataUrl)) {
+      return NextResponse.json({ ok: false, error: "Reference image must be a valid image data URL." }, { status: 400 });
     }
     const plen = assertPromptLength(prompt);
     if (!plen.ok) {
@@ -112,7 +116,15 @@ export async function POST(req: Request) {
         stream: true,
         messages: [
           { role: "system", content: SYSTEM_PROMPT_SINGLE },
-          { role: "user", content: prompt },
+          referenceImageDataUrl
+            ? {
+                role: "user",
+                content: [
+                  { type: "text", text: `${prompt}\n\nUse the attached image as a strong design reference.` },
+                  { type: "image_url", image_url: { url: referenceImageDataUrl } },
+                ],
+              }
+            : { role: "user", content: prompt },
         ],
       }),
       cache: "no-store",
@@ -247,6 +259,9 @@ export async function POST(req: Request) {
         { ok: false, error: "Too many generation requests. Please wait and retry." },
         { status: 429, headers: { "Retry-After": String(error.retryAfterSec) } }
       );
+    }
+    if (error instanceof Error && error.message === "UNVERIFIED_EMAIL") {
+      return NextResponse.json({ ok: false, error: "Verify email first" }, { status: 403 });
     }
     if (error instanceof Error && error.message === "UNAUTHORIZED") {
       return NextResponse.json({ ok: false, error: "Unauthorized." }, { status: 401 });

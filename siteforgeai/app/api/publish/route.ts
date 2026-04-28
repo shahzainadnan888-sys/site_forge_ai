@@ -1,5 +1,5 @@
 import { after, NextResponse } from "next/server";
-import { requireCurrentServerUser } from "@/lib/auth/current-user";
+import { requireVerifiedServerUser } from "@/lib/auth/current-user";
 import {
   getPublishedMeta,
   mergePublishedVercelProject,
@@ -29,7 +29,7 @@ function looksLikeFullHtml(s: string) {
 export async function POST(request: Request) {
   try {
     assertSameOrigin(request);
-    const currentUser = await requireCurrentServerUser();
+    const currentUser = await requireVerifiedServerUser();
     enforceRateLimit(request, "publish-site", { limit: 8, windowMs: 60_000, userId: currentUser.uid });
     enforceRateLimitByIp(request, "publish-site-ip", { limit: 20, windowMs: 60_000 });
 
@@ -100,6 +100,9 @@ export async function POST(request: Request) {
         { ok: false, error: "Too many publish attempts. Please wait and retry." },
         { status: 429, headers: { "Retry-After": String(e.retryAfterSec) } }
       );
+    }
+    if (e instanceof Error && e.message === "UNVERIFIED_EMAIL") {
+      return NextResponse.json({ ok: false, error: "Verify email first" }, { status: 403 });
     }
     if (e instanceof Error && e.message === "UNAUTHORIZED") {
       return NextResponse.json({ ok: false, error: "You must be signed in to publish." }, { status: 401 });

@@ -1,5 +1,5 @@
 import { NextResponse } from "next/server";
-import { requireCurrentServerUser } from "@/lib/auth/current-user";
+import { requireVerifiedServerUser } from "@/lib/auth/current-user";
 import { refundServerCredits, spendServerCredits } from "@/lib/auth/user-store";
 import { EDIT_APPLY_CREDIT_COST } from "@/lib/credit-economy";
 import { assertEditBodyLimits } from "@/lib/security/request-limits";
@@ -61,7 +61,7 @@ export async function POST(req: Request) {
 
   try {
     assertSameOrigin(req);
-    const user = await requireCurrentServerUser();
+    const user = await requireVerifiedServerUser();
     enforceRateLimit(req, "edit-template", { limit: 20, windowMs: 60_000, userId: user.uid });
     enforceRateLimitByIp(req, "edit-template-ip", { limit: 40, windowMs: 60_000 });
     const body = (await req.json()) as Body;
@@ -160,6 +160,9 @@ export async function POST(req: Request) {
         { ok: false, error: "Too many edit requests. Please wait and retry." },
         { status: 429, headers: { "Retry-After": String(error.retryAfterSec) } }
       );
+    }
+    if (error instanceof Error && error.message === "UNVERIFIED_EMAIL") {
+      return NextResponse.json({ ok: false, error: "Verify email first" }, { status: 403 });
     }
     if (error instanceof Error && error.message === "UNAUTHORIZED") {
       return NextResponse.json({ ok: false, error: "Unauthorized." }, { status: 401 });

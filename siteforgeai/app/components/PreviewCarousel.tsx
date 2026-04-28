@@ -1,14 +1,13 @@
 const previews = [
-  { name: "Portfolio", bar: "portfolio.site", image: "/Gemini_Generated_Image_pobz0cpobz0cpobz.png" },
-  { name: "SaaS", bar: "app.siteforge.ai", image: "/Gemini_Generated_Image_oiwkcmoiwkcmoiwk.png" },
-  { name: "E-commerce", bar: "shop.brand.co", image: "/Gemini_Generated_Image_ucnophucnophucno.png" },
-  { name: "Landing", bar: "launch.studio", image: "/Gemini_Generated_Image_a1lewna1lewna1le.png" },
-  { name: "Agency", bar: "agencyflow.io", image: "/Gemini_Generated_Image_ykzq3oykzq3oykzq.png" },
-  { name: "Startup", bar: "founderspace.app", image: "/Gemini_Generated_Image_t01zy6t01zy6t01z.png" },
-  { name: "Creator", bar: "creatorhub.pro", image: "/Gemini_Generated_Image_3fvfy13fvfy13fvf.png" },
-  { name: "Consulting", bar: "consulting.one", image: "/Gemini_Generated_Image_1ob3er1ob3er1ob3.png" },
-  { name: "Product", bar: "productlab.dev", image: "/Gemini_Generated_Image_7758zm7758zm7758.png" },
-  { name: "Education", bar: "learnfast.co", image: "/Gemini_Generated_Image_nr0cponr0cponr0c.png" },
+  { name: "Portfolio", bar: "portfolio.site", image: "/home-user-images/preview-01.png" },
+  { name: "Skater", bar: "skater.showcase", image: "/home-user-images/preview-02.png" },
+  { name: "Personal", bar: "clyde.profile", image: "/home-user-images/preview-03.png" },
+  { name: "Ocean", bar: "adrian.studio", image: "/home-user-images/preview-04.png" },
+  { name: "Business", bar: "business.welcome", image: "/home-user-images/preview-05.png" },
+  { name: "Growth", bar: "growth.brand", image: "/home-user-images/preview-06.png" },
+  { name: "Mind App", bar: "startup.landing", image: "/home-user-images/preview-07.png" },
+  { name: "Keannu", bar: "keannu.portfolio", image: "/home-user-images/preview-12.png" },
+  { name: "Neon Landing", bar: "neon.product", image: "/home-user-images/preview-13.png" },
 ] as const;
 
 function PreviewFrame({

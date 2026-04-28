@@ -1,10 +1,10 @@
 "use client";
 
 import { useCallback, useEffect, useState } from "react";
+import Link from "next/link";
 import { FREE_CREDITS_BLOCKED_BODY, FREE_CREDITS_BLOCKED_TITLE } from "@/lib/free-credit-blocked-message";
 import { SITEFORGE_SESSION_EVENT } from "@/lib/siteforge-credits";
 
-const TOAST_MS = 6000;
 const SESSION_KEY = "siteforge-session";
 
 /**
@@ -60,8 +60,6 @@ export function GlobalZeroCreditsToast() {
       return;
     }
     setToastOpen(true);
-    const hide = window.setTimeout(() => setToastOpen(false), TOAST_MS);
-    return () => window.clearTimeout(hide);
   }, [shouldOfferToast]);
 
   if (!shouldOfferToast || !toastOpen) return null;
@@ -75,7 +73,7 @@ export function GlobalZeroCreditsToast() {
       aria-live="polite"
     >
       <div
-        className="pointer-events-auto rounded-2xl border px-3 py-2.5 text-sm leading-snug shadow-lg sm:px-4 sm:py-3"
+        className="pointer-events-auto relative rounded-2xl border px-3 py-2.5 pr-10 text-sm leading-snug shadow-lg sm:px-4 sm:py-3 sm:pr-10"
         style={{
           borderColor: "var(--sf-border)",
           color: "var(--sf-text)",
@@ -83,6 +81,18 @@ export function GlobalZeroCreditsToast() {
           boxShadow: "0 10px 40px color-mix(in srgb, black 18%, transparent)",
         }}
       >
+        <button
+          type="button"
+          onClick={() => setToastOpen(false)}
+          className="absolute right-2 top-2 inline-flex h-6 w-6 items-center justify-center rounded-md text-xs font-semibold"
+          style={{
+            color: "var(--sf-text-muted)",
+            background: "color-mix(in srgb, var(--sf-text) 6%, transparent)",
+          }}
+          aria-label="Dismiss credit message"
+        >
+          X
+        </button>
         {isDuplicate ? (
           <>
             <p className="font-semibold" style={{ color: "var(--sf-text)" }}>
@@ -97,9 +107,9 @@ export function GlobalZeroCreditsToast() {
             <p className="font-semibold" style={{ color: "var(--sf-text)" }}>
               You&apos;re out of credits
             </p>
-            <p className="mt-1" style={{ color: "var(--sf-text-muted)" }}>
-              Contact us to get more credits and keep generating websites.
-            </p>
+            <Link href="/plans" className="mt-1 block underline underline-offset-2" style={{ color: "var(--sf-text-muted)" }}>
+              Buy credits
+            </Link>
           </>
         )}
       </div>

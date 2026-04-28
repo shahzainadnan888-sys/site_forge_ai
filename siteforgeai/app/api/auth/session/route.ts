@@ -10,6 +10,12 @@ export const runtime = "nodejs";
 
 type Body = {
   idToken?: string;
+  deviceContext?: {
+    timezone?: string;
+    screen?: string;
+    platform?: string;
+    userAgent?: string;
+  };
 };
 
 export async function POST(req: Request) {
@@ -25,11 +31,20 @@ export async function POST(req: Request) {
 
     const adminAuth = getFirebaseAdminAuth();
     const decoded = await adminAuth.verifyIdToken(idToken, true);
+    if (decoded.email_verified !== true) {
+      return NextResponse.json(
+        { ok: false, error: "Please verify your email before logging in.", code: "EMAIL_NOT_VERIFIED" },
+        { status: 403 }
+      );
+    }
 
     const { name, maxAgeMs, cookie } = getSessionCookieOptions();
     const sessionCookie = await adminAuth.createSessionCookie(idToken, { expiresIn: maxAgeMs });
 
-    await getOrCreateServerUser(decoded, { request: req });
+    await getOrCreateServerUser(decoded, {
+      request: req,
+      deviceContext: body?.deviceContext,
+    });
     const response = NextResponse.json({ ok: true });
     response.cookies.set(name, sessionCookie, cookie);
     return response;

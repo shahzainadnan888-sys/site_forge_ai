@@ -9,9 +9,11 @@ import { getFirestore } from "firebase-admin/firestore";
 import { getFirebaseAdminAuth } from "@/lib/firebase/admin";
 import { DEFAULT_SIGNUP_CREDITS } from "@/lib/credit-economy";
 import {
+  buildDeviceFingerprint,
+  type DeviceContext,
   getRequestClientIp,
-  shouldBlockFreeCreditsInTransaction,
-  writeFreeCreditGrants,
+  isDeviceAlreadyClaimedInTransaction,
+  writeDeviceFreeCreditLog,
 } from "@/lib/auth/free-credit-claims";
 
 const USERS_COLLECTION = "siteforgeUsers";
@@ -36,6 +38,7 @@ export type ServerUser = {
 
 export type GetOrCreateServerUserOptions = {
   request?: Request;
+  deviceContext?: DeviceContext;
 };
 
 function isBonusAccountEmail(email: string) {
@@ -97,89 +100,90 @@ export async function getOrCreateServerUser(
   }
 
   const now = Date.now();
+  const request = options?.request;
+  const deviceFingerprint = request
+    ? buildDeviceFingerprint({ request, deviceContext: options?.deviceContext })
+    : null;
+  const clientIp = request ? getRequestClientIp(request) : "unknown";
 
   return db.runTransaction(async (tx) => {
     const inTx = await tx.get(ref);
-    if (inTx.exists) {
-      return normalizeServerUser(uid, (inTx.data() ?? {}) as Record<string, unknown>);
-    }
+    const current = inTx.exists
+      ? normalizeServerUser(uid, (inTx.data() ?? {}) as Record<string, unknown>)
+      : null;
 
+    // Bonus account keeps its fixed large balance behavior.
     if (isBonusAccountEmail(email)) {
-      const clientIp = options?.request ? getRequestClientIp(options.request) : "unknown";
-      const credits = BONUS_ACCOUNT_CREDITS;
-      const created: ServerUser = {
+      const credits = current ? current.credits : BONUS_ACCOUNT_CREDITS;
+      const next: ServerUser = {
         uid,
         email,
-        fullName: fallbackName,
+        fullName: current?.fullName || fallbackName,
         credits,
         freeCreditsClaimed: true,
         freeCreditsBlocked: false,
-        signupIpAddress: clientIp,
+        signupIpAddress: current?.signupIpAddress || clientIp,
       };
-      tx.set(ref, {
-        email: created.email,
-        fullName: created.fullName,
-        credits: created.credits,
-        freeCreditsClaimed: true,
-        freeCreditsBlocked: false,
-        signupIpAddress: clientIp,
-        createdAt: now,
-        updatedAt: now,
-      });
-      writeFreeCreditGrants(tx, uid, clientIp);
-      return created;
+      tx.set(
+        ref,
+        {
+          email: next.email,
+          fullName: next.fullName,
+          credits: next.credits,
+          freeCreditsClaimed: true,
+          freeCreditsBlocked: false,
+          signupIpAddress: next.signupIpAddress,
+          ...(current ? {} : { createdAt: now }),
+          updatedAt: now,
+        },
+        { merge: true }
+      );
+      return next;
     }
 
-    if (options?.request) {
-      const clientIp = getRequestClientIp(options.request);
-      const blocked = await shouldBlockFreeCreditsInTransaction(tx, clientIp);
-      const credits = blocked ? 0 : DEFAULT_SIGNUP_CREDITS;
-      const freeCreditsClaimed = true;
-      const freeCreditsBlocked = blocked;
-      const created: ServerUser = {
-        uid,
-        email,
-        fullName: fallbackName,
-        credits,
-        freeCreditsClaimed,
-        freeCreditsBlocked,
-        signupIpAddress: clientIp,
-      };
-      tx.set(ref, {
-        email: created.email,
-        fullName: created.fullName,
-        credits: created.credits,
-        freeCreditsClaimed,
-        freeCreditsBlocked,
-        signupIpAddress: clientIp,
-        createdAt: now,
-        updatedAt: now,
-      });
-      if (!blocked && credits > 0) {
-        writeFreeCreditGrants(tx, uid, clientIp);
+    let grantApplied = false;
+    if (deviceFingerprint) {
+      const alreadyClaimed = await isDeviceAlreadyClaimedInTransaction(tx, deviceFingerprint);
+      if (!alreadyClaimed) {
+        grantApplied = true;
+        writeDeviceFreeCreditLog(tx, deviceFingerprint, uid, true);
       }
-      return created;
     }
 
-    const credits = getInitialCreditsForEmail(email);
-    const created: ServerUser = {
+    const baseCredits = current
+      ? current.credits
+      : request
+        ? 0
+        : getInitialCreditsForEmail(email);
+    const credits = Math.max(0, baseCredits + (grantApplied ? DEFAULT_SIGNUP_CREDITS : 0));
+    const next: ServerUser = {
       uid,
       email,
-      fullName: fallbackName,
+      fullName: current?.fullName || fallbackName,
       credits,
       freeCreditsClaimed: true,
-      freeCreditsBlocked: false,
+      freeCreditsBlocked: request ? !grantApplied : false,
+      signupIpAddress: current?.signupIpAddress || clientIp,
+      ...(deviceFingerprint ? { deviceFingerprint } : {}),
+      ...(current?.avatarDataUrl ? { avatarDataUrl: current.avatarDataUrl } : {}),
     };
-    tx.set(ref, {
-      email: created.email,
-      fullName: created.fullName,
-      credits: created.credits,
-      freeCreditsClaimed: true,
-      freeCreditsBlocked: false,
-      createdAt: now,
-      updatedAt: now,
-    });
-    return created;
+
+    tx.set(
+      ref,
+      {
+        email: next.email,
+        fullName: next.fullName,
+        credits: next.credits,
+        freeCreditsClaimed: true,
+        freeCreditsBlocked: next.freeCreditsBlocked,
+        signupIpAddress: next.signupIpAddress,
+        ...(deviceFingerprint ? { deviceFingerprint } : {}),
+        ...(current ? {} : { createdAt: now }),
+        updatedAt: now,
+      },
+      { merge: true }
+    );
+    return next;
   });
 }
 

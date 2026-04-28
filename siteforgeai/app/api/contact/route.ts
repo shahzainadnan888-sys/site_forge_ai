@@ -5,6 +5,7 @@ import { logSecurityEvent } from "@/lib/security/security-log";
 
 const RESEND_API_URL = "https://api.resend.com/emails";
 const DEFAULT_CONTACT_TO = "support@buildwithsiteforge.com";
+const CONTACT_SUBJECT = "New Contact Form Message - BuildWithSiteForge";
 const MAX_MESSAGE_LEN = 10_000;
 const MAX_NAME_LEN = 200;
 const MAX_EMAIL_LEN = 320;
@@ -57,7 +58,7 @@ export async function POST(req: Request) {
 
   const apiKey = process.env.RESEND_API_KEY?.trim();
   const from = process.env.CONTACT_FROM_EMAIL?.trim();
-  const to = process.env.CONTACT_TO_EMAIL?.trim() || DEFAULT_CONTACT_TO;
+  const to = DEFAULT_CONTACT_TO;
 
   if (!apiKey || !from) {
     return NextResponse.json(
@@ -80,8 +81,8 @@ export async function POST(req: Request) {
       from,
       to: [to],
       reply_to: email,
-      subject: `SiteForge contact: ${name}`,
-      text: `Name: ${name}\nEmail: ${email}\n\n${message}`,
+      subject: CONTACT_SUBJECT,
+      text: `Name: ${name}\nEmail: ${email}\nMessage: ${message}`,
     }),
   });
 
@@ -98,5 +99,5 @@ export async function POST(req: Request) {
     );
   }
 
-  return NextResponse.json({ ok: true });
+  return NextResponse.json({ ok: true, message: "Email sent successfully." });
 }

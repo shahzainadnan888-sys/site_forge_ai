@@ -29,6 +29,17 @@ type PreviewDevice = "pc" | "tablet" | "mobile";
 type FontPreset = "Inter" | "Poppins" | "Manrope" | "Montserrat" | "Playfair Display";
 type SelectedKind = "none" | "text" | "image" | "navbar" | "other";
 
+function ImagePlusIcon() {
+  return (
+    <svg className="h-4 w-4" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth={1.8} aria-hidden>
+      <path d="M4 5.5A1.5 1.5 0 015.5 4h7A1.5 1.5 0 0114 5.5v7a1.5 1.5 0 01-1.5 1.5h-7A1.5 1.5 0 014 12.5v-7z" />
+      <path d="M5.5 12l2.7-2.7a1 1 0 011.4 0l2.9 2.9" />
+      <path d="M10.5 8.2h.01" />
+      <path d="M18 8v8m-4-4h8" />
+    </svg>
+  );
+}
+
 function readSessionCredits(): number {
   if (typeof window === "undefined") return 0;
   try {
@@ -122,6 +133,8 @@ export function BuilderDashboardView() {
   const [navLinksDraft, setNavLinksDraft] = useState("Home\nFeatures\nAbout\nPricing\nContact");
   const [logoTextDraft, setLogoTextDraft] = useState("Brand");
   const [pendingImageUrl, setPendingImageUrl] = useState("");
+  const [promptReferenceImageDataUrl, setPromptReferenceImageDataUrl] = useState<string | null>(null);
+  const [promptReferenceImageName, setPromptReferenceImageName] = useState("");
   const [editorTab, setEditorTab] = useState<"content" | "design">("content");
   const [toolbarPos, setToolbarPos] = useState({ x: 80, y: 80 });
   const publishDisabled = !hasSession || stage !== "ready" || publishSubmitting;
@@ -132,6 +145,7 @@ export function BuilderDashboardView() {
     dy: 0,
   });
   const imageUploadInputRef = useRef<HTMLInputElement>(null);
+  const promptImageInputRef = useRef<HTMLInputElement>(null);
   const previewFrameRef = useRef<HTMLIFrameElement>(null);
   const fullscreenFrameRef = useRef<HTMLIFrameElement>(null);
   /** Only reset the generate screen when the signed-in user (or sign-out) changes — not on every session/credits sync. */
@@ -172,8 +186,19 @@ export function BuilderDashboardView() {
           return;
         }
         lastScopeKeyForEntryEffect.current = scopeKey;
-        // Do not auto-open the "Website Ready" / preview from localStorage. Everyone should
-        // land on the generate screen first. Saved HTML stays in storage for /editor and /preview.
+        const { htmlKey, promptKey } = getProjectLocalStorageKeys(uid);
+        const storedHtml = localStorage.getItem(htmlKey) || "";
+        const storedPrompt = localStorage.getItem(promptKey) || "";
+        if (storedHtml.includes("</html>")) {
+          setGeneratedHtml(storedHtml);
+          setDraftHtml(storedHtml);
+          setPrompt(storedPrompt || DEFAULT_DASHBOARD_PROMPT);
+          setStage("ready");
+          setIsEditorMode(false);
+          setImmersivePreview(false);
+          setGenerationError("");
+          return;
+        }
         setStage("idle");
         setGeneratedHtml("");
         setPrompt(DEFAULT_DASHBOARD_PROMPT);
@@ -185,6 +210,18 @@ export function BuilderDashboardView() {
     onDashboardEntry();
     return subscribeSessionUidChange(onDashboardEntry);
   }, []);
+
+  useEffect(() => {
+    if (stage !== "ready" || !generatedHtml.includes("</html>")) return;
+    try {
+      const uid = readSessionUidFromLocalStorage();
+      const { htmlKey, promptKey } = getProjectLocalStorageKeys(uid);
+      localStorage.setItem(htmlKey, generatedHtml);
+      localStorage.setItem(promptKey, prompt);
+    } catch {
+      // ignore localStorage persistence failures
+    }
+  }, [stage, generatedHtml, prompt]);
 
   /** After /editor, restore “Website ready” (prompt + actions) from localStorage. */
   useEffect(() => {
@@ -396,7 +433,7 @@ export function BuilderDashboardView() {
       const res = await fetch("/api/generate-template", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ prompt }),
+        body: JSON.stringify({ prompt, ...(promptReferenceImageDataUrl ? { referenceImageDataUrl: promptReferenceImageDataUrl } : {}) }),
       });
 
       if (!res.ok) {
@@ -483,6 +520,8 @@ export function BuilderDashboardView() {
       setPreviewModeOn(true);
       setImmersivePreview(false);
       setStage("ready");
+      setPromptReferenceImageDataUrl(null);
+      setPromptReferenceImageName("");
       dispatchParticles();
     } catch (error) {
       void (async () => {
@@ -493,6 +532,22 @@ export function BuilderDashboardView() {
       setStage("idle");
       setProgress(0);
     }
+  };
+
+  const handleUploadPromptReferenceImage = async (file: File) => {
+    if (!file.type.startsWith("image/")) {
+      setGenerationError("Please upload an image file only.");
+      return;
+    }
+    const dataUrl = await new Promise<string>((resolve, reject) => {
+      const reader = new FileReader();
+      reader.onload = () => resolve(String(reader.result || ""));
+      reader.onerror = () => reject(new Error("Could not read image file."));
+      reader.readAsDataURL(file);
+    });
+    setPromptReferenceImageDataUrl(dataUrl);
+    setPromptReferenceImageName(file.name || "reference-image");
+    setGenerationError("");
   };
 
   const handleGenerateClick = () => {
@@ -513,8 +568,8 @@ export function BuilderDashboardView() {
       } else {
         setCreditGateMessage(
           hasSession
-            ? "Contact us to get more credits."
-            : `Sign in to get ${DEFAULT_SIGNUP_CREDITS} free credits and start building your free website.`
+            ? "Buy credits on the Plans page: /plans"
+            : "Please first login to generate."
         );
       }
       return;
@@ -774,6 +829,34 @@ export function BuilderDashboardView() {
                 style={{ borderColor: "var(--sf-border)", color: "var(--sf-text)" }}
                 placeholder="Type your website prompt..."
               />
+              <div className="mt-2 flex items-center justify-between gap-2">
+                <button
+                  type="button"
+                  onClick={() => promptImageInputRef.current?.click()}
+                  className="inline-flex items-center gap-2 rounded-full border px-3 py-1.5 text-xs font-semibold"
+                  style={{ borderColor: "var(--sf-border)", color: "var(--sf-text)" }}
+                  title="Upload design reference image"
+                >
+                  <ImagePlusIcon />
+                  <span>Add design image</span>
+                </button>
+                {promptReferenceImageName ? (
+                  <span className="truncate text-xs" style={{ color: "var(--sf-text-muted)" }}>
+                    {promptReferenceImageName}
+                  </span>
+                ) : null}
+              </div>
+              <input
+                ref={promptImageInputRef}
+                type="file"
+                accept="image/*"
+                className="hidden"
+                onChange={(e) => {
+                  const file = e.target.files?.[0];
+                  e.target.value = "";
+                  if (file) void handleUploadPromptReferenceImage(file);
+                }}
+              />
             </div>
 
             {stage === "idle" && (
@@ -941,7 +1024,18 @@ export function BuilderDashboardView() {
                 <button
                   type="button"
                   onClick={() => {
+                    try {
+                      const uid = readSessionUidFromLocalStorage();
+                      const { htmlKey } = getProjectLocalStorageKeys(uid);
+                      localStorage.removeItem(htmlKey);
+                    } catch {
+                      // ignore storage errors
+                    }
+                    setGeneratedHtml("");
+                    setDraftHtml("");
                     setStage("idle");
+                    setPromptReferenceImageDataUrl(null);
+                    setPromptReferenceImageName("");
                     dispatchParticles();
                   }}
                   className="col-span-2 min-h-[2.5rem] rounded-full border px-3 py-2 text-sm font-semibold text-white sm:col-span-1"
