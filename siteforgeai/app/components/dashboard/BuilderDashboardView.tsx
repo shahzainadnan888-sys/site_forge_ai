@@ -11,6 +11,7 @@ import {
 import { DEFAULT_SIGNUP_CREDITS, GENERATION_CREDIT_COST } from "@/lib/credit-economy";
 import { isMultiPageWebsiteRequest, MULTI_PAGE_NOT_ALLOWED } from "@/lib/generate-prompt-guards";
 import { freeCreditsBlockedMessageMultiline } from "@/lib/free-credit-blocked-message";
+import { enforceSinglePageAnchors } from "@/lib/sanitize-generated-html";
 import {
   claimLegacyProjectIntoUserKeys,
   getProjectLocalStorageKeys,
@@ -190,8 +191,9 @@ export function BuilderDashboardView() {
         const storedHtml = localStorage.getItem(htmlKey) || "";
         const storedPrompt = localStorage.getItem(promptKey) || "";
         if (storedHtml.includes("</html>")) {
-          setGeneratedHtml(storedHtml);
-          setDraftHtml(storedHtml);
+          const safeStoredHtml = enforceSinglePageAnchors(storedHtml);
+          setGeneratedHtml(safeStoredHtml);
+          setDraftHtml(safeStoredHtml);
           setPrompt(storedPrompt || DEFAULT_DASHBOARD_PROMPT);
           setStage("ready");
           setIsEditorMode(false);
@@ -234,7 +236,8 @@ export function BuilderDashboardView() {
       const storedHtml = localStorage.getItem(htmlKey);
       const storedPrompt = localStorage.getItem(promptKey);
       if (storedHtml?.includes("</html>")) {
-        setGeneratedHtml(storedHtml);
+        const safeStoredHtml = enforceSinglePageAnchors(storedHtml);
+        setGeneratedHtml(safeStoredHtml);
         if (storedPrompt) setPrompt(storedPrompt);
         setStage("ready");
         setIsEditorMode(false);
@@ -371,11 +374,12 @@ export function BuilderDashboardView() {
   useEffect(() => {
     const html = isEditorMode ? draftHtml : generatedHtml;
     if (!html) return;
+    const safeHtml = enforceSinglePageAnchors(html);
     if (previewFrameRef.current) {
-      previewFrameRef.current.srcdoc = html;
+      previewFrameRef.current.srcdoc = safeHtml;
     }
     if (immersivePreview && fullscreenFrameRef.current) {
-      fullscreenFrameRef.current.srcdoc = html;
+      fullscreenFrameRef.current.srcdoc = safeHtml;
     }
   }, [generatedHtml, draftHtml, isEditorMode, immersivePreview]);
 
@@ -510,7 +514,7 @@ export function BuilderDashboardView() {
           // ignore local cache errors
         }
       }
-      setGeneratedHtml(finalHtml);
+      setGeneratedHtml(enforceSinglePageAnchors(finalHtml));
       const uid = readSessionUidFromLocalStorage();
       const { htmlKey, promptKey } = getProjectLocalStorageKeys(uid);
       localStorage.setItem(htmlKey, finalHtml);
@@ -601,9 +605,9 @@ export function BuilderDashboardView() {
     if (!generatedHtml) return;
     const liveDoc = previewFrameRef.current?.contentDocument;
     if (liveDoc?.documentElement?.outerHTML) {
-      setGeneratedHtml(`<!DOCTYPE html>\n${liveDoc.documentElement.outerHTML}`);
+      setGeneratedHtml(enforceSinglePageAnchors(`<!DOCTYPE html>\n${liveDoc.documentElement.outerHTML}`));
     } else {
-      setGeneratedHtml(draftHtml);
+      setGeneratedHtml(enforceSinglePageAnchors(draftHtml));
     }
     setIsEditorMode(false);
     setShowNavEditor(false);
@@ -766,12 +770,12 @@ export function BuilderDashboardView() {
 
   const ensurePreviewHtml = () => {
     const frameSrcDoc = previewFrameRef.current?.srcdoc?.trim();
-    if (frameSrcDoc) return frameSrcDoc;
+    if (frameSrcDoc) return enforceSinglePageAnchors(frameSrcDoc);
     const currentHtml = (isEditorMode ? draftHtml : generatedHtml)?.trim();
-    if (currentHtml) return currentHtml;
+    if (currentHtml) return enforceSinglePageAnchors(currentHtml);
     const previewDoc = previewFrameRef.current?.contentDocument;
     if (previewDoc?.documentElement?.outerHTML) {
-      return `<!DOCTYPE html>${previewDoc.documentElement.outerHTML}`;
+      return enforceSinglePageAnchors(`<!DOCTYPE html>${previewDoc.documentElement.outerHTML}`);
     }
     return "";
   };

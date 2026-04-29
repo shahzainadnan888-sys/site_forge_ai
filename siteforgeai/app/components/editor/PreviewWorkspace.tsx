@@ -8,6 +8,7 @@ import {
   readSessionUidFromLocalStorage,
   subscribeSessionUidChange,
 } from "@/lib/siteforge-project-storage";
+import { enforceSinglePageAnchors } from "@/lib/sanitize-generated-html";
 type Device = "pc" | "tablet" | "mobile";
 
 export function PreviewWorkspace() {
@@ -23,7 +24,8 @@ export function PreviewWorkspace() {
         claimLegacyProjectIntoUserKeys(uid);
       }
       const { htmlKey } = getProjectLocalStorageKeys(uid);
-      setHtml(localStorage.getItem(htmlKey) || "");
+      const rawHtml = localStorage.getItem(htmlKey) || "";
+      setHtml(rawHtml ? enforceSinglePageAnchors(rawHtml) : "");
     };
     load();
     return subscribeSessionUidChange(load);

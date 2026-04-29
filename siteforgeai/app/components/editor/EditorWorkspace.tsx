@@ -10,6 +10,7 @@ import {
   subscribeSessionUidChange,
 } from "@/lib/siteforge-project-storage";
 import { emitSiteforgeSessionUpdate } from "@/lib/siteforge-credits";
+import { enforceSinglePageAnchors } from "@/lib/sanitize-generated-html";
 
 const HYDRATE_DASHBOARD_KEY = "siteforge-hydrate-dashboard";
 const SESSION_KEY = "siteforge-session";
@@ -38,7 +39,8 @@ export function EditorWorkspace() {
         claimLegacyProjectIntoUserKeys(uid);
       }
       const { htmlKey, promptKey } = getProjectLocalStorageKeys(uid);
-      setHtml(localStorage.getItem(htmlKey) || "");
+      const rawHtml = localStorage.getItem(htmlKey) || "";
+      setHtml(rawHtml ? enforceSinglePageAnchors(rawHtml) : "");
       setPrompt(localStorage.getItem(promptKey) || "");
     };
     load();
@@ -103,7 +105,7 @@ export function EditorWorkspace() {
           : err?.error;
         throw new Error(msg || "Unable to apply AI edit.");
       }
-      let nextHtml = data.html;
+      let nextHtml = enforceSinglePageAnchors(data.html);
       if (typeof data.remainingCredits === "number") {
         try {
           const raw = localStorage.getItem(SESSION_KEY);
@@ -150,7 +152,7 @@ export function EditorWorkspace() {
 
   const saveCurrent = () => {
     const liveHtml = iframeRef.current?.contentDocument?.documentElement?.outerHTML;
-    const next = liveHtml ? `<!DOCTYPE html>\n${liveHtml}` : html;
+    const next = enforceSinglePageAnchors(liveHtml ? `<!DOCTYPE html>\n${liveHtml}` : html);
     setHtml(next);
     const puid = readSessionUidFromLocalStorage();
     const { htmlKey } = getProjectLocalStorageKeys(puid);

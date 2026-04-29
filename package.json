@@ -1,0 +1,10 @@
+{
+  "name": "siteforgeai-root",
+  "private": true,
+  "scripts": {
+    "dev": "npm --prefix siteforgeai run dev",
+    "build": "npm --prefix siteforgeai run build",
+    "start": "npm --prefix siteforgeai run start",
+    "lint": "npm --prefix siteforgeai run lint"
+  }
+}

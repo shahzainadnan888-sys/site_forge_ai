@@ -6,12 +6,9 @@ export type ServerUserAuthInput = {
   email_verified?: boolean;
 };
 import { DEFAULT_SIGNUP_CREDITS } from "@/lib/credit-economy";
+import { buildDeviceFingerprint, getRequestClientIp } from "@/lib/auth/free-credit-claims";
 
 const USERS_COLLECTION = "siteforgeUsers";
-const BONUS_ACCOUNT_EMAIL = "shahzainadnan1010@gmail.com";
-const BONUS_ACCOUNT_CREDITS = 10_000;
-const TEST_CREDIT_EMAIL = "shahzainadnan555@gmail.com";
-const TEST_CREDIT_MIN_BALANCE = 500;
 
 export type ServerUser = {
   uid: string;
@@ -39,17 +36,7 @@ export type GetOrCreateServerUserOptions = {
   };
 };
 
-function isBonusAccountEmail(email: string) {
-  return email.toLowerCase() === BONUS_ACCOUNT_EMAIL;
-}
-
-function isTestCreditEmail(email: string) {
-  return email.toLowerCase() === TEST_CREDIT_EMAIL;
-}
-
-function getInitialCreditsForEmail(email: string): number {
-  if (isBonusAccountEmail(email)) return BONUS_ACCOUNT_CREDITS;
-  if (isTestCreditEmail(email)) return Math.max(DEFAULT_SIGNUP_CREDITS, TEST_CREDIT_MIN_BALANCE);
+function getInitialCreditsForEmail(_email: string): number {
   return DEFAULT_SIGNUP_CREDITS;
 }
 
@@ -81,6 +68,31 @@ function normalizeServerUser(uid: string, raw: Record<string, unknown>): ServerU
 }
 
 const userStore = new Map<string, ServerUser>();
+
+function hasPriorClaimByAnotherUser(args: {
+  uid: string;
+  signupIpAddress?: string;
+  deviceFingerprint?: string;
+}): boolean {
+  const signupIpAddress =
+    typeof args.signupIpAddress === "string" &&
+    args.signupIpAddress.length > 0 &&
+    args.signupIpAddress !== "unknown"
+      ? args.signupIpAddress
+      : "";
+  const deviceFingerprint =
+    typeof args.deviceFingerprint === "string" && args.deviceFingerprint.length > 0
+      ? args.deviceFingerprint
+      : "";
+  if (!signupIpAddress && !deviceFingerprint) return false;
+
+  for (const other of userStore.values()) {
+    if (other.uid === args.uid) continue;
+    if (signupIpAddress && other.signupIpAddress === signupIpAddress) return true;
+    if (deviceFingerprint && other.deviceFingerprint === deviceFingerprint) return true;
+  }
+  return false;
+}
 
 function decodeJwtPayload(token: string): Record<string, unknown> {
   const parts = token.split(".");
@@ -116,22 +128,57 @@ export async function getOrCreateServerUser(
     (email.split("@")[0] || "User");
 
   const existing = userStore.get(uid);
+  const signupIpAddress = options?.request ? getRequestClientIp(options.request) : undefined;
+  const deviceFingerprint = options?.request
+    ? buildDeviceFingerprint({
+        request: options.request,
+        deviceContext: options.deviceContext,
+      })
+    : undefined;
   if (existing) {
-    if (isTestCreditEmail(existing.email) && existing.credits < TEST_CREDIT_MIN_BALANCE) {
-      const next = { ...existing, credits: TEST_CREDIT_MIN_BALANCE };
+    const duplicateClaim = hasPriorClaimByAnotherUser({
+      uid,
+      signupIpAddress,
+      deviceFingerprint,
+    });
+    const freeCreditsBlocked = existing.freeCreditsBlocked || duplicateClaim;
+    const expectedCredits = freeCreditsBlocked ? 0 : DEFAULT_SIGNUP_CREDITS;
+    const shouldUpdate =
+      existing.credits !== expectedCredits ||
+      existing.freeCreditsBlocked !== freeCreditsBlocked ||
+      (signupIpAddress &&
+        signupIpAddress !== "unknown" &&
+        existing.signupIpAddress !== signupIpAddress) ||
+      (deviceFingerprint && existing.deviceFingerprint !== deviceFingerprint);
+    if (shouldUpdate) {
+      const next = {
+        ...existing,
+        credits: expectedCredits,
+        freeCreditsBlocked,
+        ...(signupIpAddress && signupIpAddress !== "unknown" ? { signupIpAddress } : {}),
+        ...(deviceFingerprint ? { deviceFingerprint } : {}),
+      };
       userStore.set(uid, next);
       return next;
     }
     return existing;
   }
 
+  const alreadyClaimed = hasPriorClaimByAnotherUser({
+    uid,
+    signupIpAddress,
+    deviceFingerprint,
+  });
+
   const next: ServerUser = {
     uid,
     email,
     fullName: fallbackName,
-    credits: getInitialCreditsForEmail(email),
+    credits: alreadyClaimed ? 0 : getInitialCreditsForEmail(email),
     freeCreditsClaimed: true,
-    freeCreditsBlocked: false,
+    freeCreditsBlocked: alreadyClaimed,
+    ...(signupIpAddress ? { signupIpAddress } : {}),
+    ...(deviceFingerprint ? { deviceFingerprint } : {}),
   };
   userStore.set(uid, next);
   return next;

@@ -69,6 +69,9 @@ function anchorFromHrefPath(rawHref: string): string | null {
 export function enforceSinglePageAnchors(html: string): string {
   let output = html.replace(/<base\b[^>]*>/gi, "");
   output = output.replace(/\bhref=(["'])\/[^"']*\1/gi, 'href="#home"');
+  output = output.replace(/\bhref=(["'])https?:\/\/(?:localhost|127\.0\.0\.1)(?::\d+)?[^"']*\1/gi, 'href="#home"');
+  output = output.replace(/\baction=(["'])https?:\/\/(?:localhost|127\.0\.0\.1)(?::\d+)?[^"']*\1/gi, 'action="#home"');
+  output = output.replace(/\baction=(["'])\/[^"']*\1/gi, 'action="#home"');
   output = output.replace(
     /(<a\b[^>]*?)\s+target=(["'])(?:_parent|_top)\2/gi,
     "$1"
@@ -242,6 +245,19 @@ document.addEventListener('click',function(e){
   e.preventDefault();
   target.scrollIntoView({behavior:'smooth',block:'start'});
 });
+document.addEventListener('submit',function(e){
+  var form=e.target;
+  if(!(form&&form.tagName==='FORM'))return;
+  var action=(form.getAttribute('action')||'').trim();
+  var id=idFromHref(action)||'contact';
+  var target=document.getElementById(id)||document.getElementById('contact')||document.getElementById('home');
+  if(target){
+    e.preventDefault();
+    target.scrollIntoView({behavior:'smooth',block:'start'});
+  }else{
+    e.preventDefault();
+  }
+},true);
 })();</script></body>`
     );
   }
