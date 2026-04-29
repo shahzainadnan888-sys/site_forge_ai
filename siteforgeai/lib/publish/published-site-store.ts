@@ -1,5 +1,5 @@
-import { FieldValue, getFirestore } from "firebase-admin/firestore";
-import { getFirebaseAdminBucket } from "@/lib/firebase/admin";
+import { deleteField, doc, getDoc, getFirestore, setDoc } from "firebase/firestore";
+import { app } from "@/lib/firebase";
 
 const COLLECTION = "siteforgePublishedSites";
 
@@ -19,7 +19,7 @@ export type PublishedSiteMeta = {
 };
 
 function docRef(siteId: string) {
-  return getFirestore().collection(COLLECTION).doc(siteId);
+  return doc(getFirestore(app), COLLECTION, siteId);
 }
 
 export function getHtmlStoragePath(siteId: string) {
@@ -27,7 +27,7 @@ export function getHtmlStoragePath(siteId: string) {
 }
 
 export async function getPublishedMeta(siteId: string): Promise<PublishedSiteMeta | null> {
-  const snap = await docRef(siteId).get();
+  const snap = await getDoc(docRef(siteId));
   if (!snap.exists) return null;
   const d = snap.data() as Record<string, unknown> | undefined;
   if (!d) return null;
@@ -46,17 +46,14 @@ export async function getPublishedMeta(siteId: string): Promise<PublishedSiteMet
 }
 
 export async function getPublishedHtmlFromGcs(meta: PublishedSiteMeta): Promise<string> {
-  const bucket = getFirebaseAdminBucket();
-  const file = bucket.file(meta.storagePath);
-  const [buf] = await file.download();
-  return buf.toString("utf-8");
+  throw new Error(`GCS storage mode is not supported in frontend-only Firebase setup. Path: ${meta.storagePath}`);
 }
 
 /**
  * Resolves published HTML: prefers inline Firestore body (no bucket), else GCS.
  */
 export async function getPublishedHtmlBySiteId(siteId: string): Promise<string | null> {
-  const snap = await docRef(siteId).get();
+  const snap = await getDoc(docRef(siteId));
   if (!snap.exists) return null;
   const d = snap.data() as Record<string, unknown> | undefined;
   if (!d) return null;
@@ -100,7 +97,8 @@ export async function getPublishedHtmlBySiteId(siteId: string): Promise<string |
 
 export async function mergePublishedVercelProject(siteId: string, vercelProjectId: string) {
   const now = Date.now();
-  await docRef(siteId).set(
+  await setDoc(
+    docRef(siteId),
     { vercelProjectId, updatedAt: now },
     { merge: true }
   );
@@ -116,8 +114,9 @@ export async function writePublishedSite(opts: {
   const sizeBytes = buffer.length;
   const now = Date.now();
   const ref = docRef(opts.siteId);
-  const prior = await ref.get();
-  const createdAt = prior.exists ? (prior.get("createdAt") as number) || now : now;
+  const prior = await getDoc(ref);
+  const priorData = prior.data() as Record<string, unknown> | undefined;
+  const createdAt = prior.exists() ? (priorData?.createdAt as number) || now : now;
 
   if (sizeBytes <= MAX_FIRESTORE_HTML_BYTES) {
     const data: Record<string, unknown> = {
@@ -135,44 +134,16 @@ export async function writePublishedSite(opts: {
       const existing = prior.get("vercelProjectId");
       if (typeof existing === "string" && existing) data.vercelProjectId = existing;
     }
-    await ref.set(data, { merge: true });
+    await setDoc(ref, data, { merge: true });
     return;
   }
-
-  const path = getHtmlStoragePath(opts.siteId);
-  let bucket;
-  try {
-    bucket = getFirebaseAdminBucket();
-  } catch (e) {
-    throw new Error(
-      "Published HTML is too large for the database. Enable Firebase Storage in the Firebase console and set FIREBASE_STORAGE_BUCKET, or reduce the page size."
-    );
-  }
-  const file = bucket.file(path);
-  try {
-    await file.save(buffer, {
-      resumable: false,
-      metadata: {
-        contentType: "text/html; charset=utf-8",
-        cacheControl: "public, max-age=30",
-        metadata: { siteId: opts.siteId, ownerUid: opts.ownerUid },
-      },
-    });
-  } catch (e) {
-    const msg = e instanceof Error ? e.message : String(e);
-    if (/bucket does not exist|404|not exist/i.test(msg)) {
-      throw new Error(
-        "Firebase Storage bucket is missing or not created. In Firebase Console open Storage, Get started, or fix FIREBASE_STORAGE_BUCKET. You can also reduce the site under ~950KB to publish without Storage."
-      );
-    }
-    throw e;
-  }
+  throw new Error("Published HTML is too large for Firestore in frontend-only mode. Reduce page size below 950KB.");
 
   const data: Record<string, unknown> = {
     ownerUid: opts.ownerUid,
     storageMode: "gcs" as const,
-    storagePath: path,
-    htmlBody: FieldValue.delete(),
+    storagePath: "",
+    htmlBody: deleteField(),
     sizeBytes,
     createdAt,
     updatedAt: now,
@@ -180,9 +151,9 @@ export async function writePublishedSite(opts: {
   if (typeof opts.vercelProjectId === "string" && opts.vercelProjectId) {
     data.vercelProjectId = opts.vercelProjectId;
   } else {
-    const existing = prior.get("vercelProjectId");
+      const existing = priorData?.vercelProjectId;
     if (typeof existing === "string" && existing) data.vercelProjectId = existing;
   }
 
-  await ref.set(data, { merge: true });
+  await setDoc(ref, data, { merge: true });
 }

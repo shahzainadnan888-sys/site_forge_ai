@@ -17,17 +17,6 @@ type Session = {
   avatarDataUrl?: string;
   freeCreditsBlocked?: boolean;
 } | null;
-type MeResponse = {
-  ok: boolean;
-  user?: {
-    uid: string;
-    fullName: string;
-    email: string;
-    credits: number;
-    avatarDataUrl?: string;
-    freeCreditsBlocked?: boolean;
-  };
-};
 
 function readSession(): Session {
   if (typeof window === "undefined") return null;
@@ -35,26 +24,6 @@ function readSession(): Session {
     const raw = localStorage.getItem(SESSION_KEY);
     if (!raw) return null;
     return JSON.parse(raw) as Session;
-  } catch {
-    return null;
-  }
-}
-
-async function syncSessionFromServer(): Promise<Session> {
-  try {
-    const res = await fetch("/api/auth/me", { cache: "no-store" });
-    const data = (await res.json().catch(() => null)) as MeResponse | null;
-    if (!res.ok || !data?.ok || !data.user) return null;
-    const nextSession: Session = {
-      uid: data.user.uid,
-      fullName: data.user.fullName,
-      email: data.user.email,
-      credits: data.user.credits,
-      freeCreditsBlocked: data.user.freeCreditsBlocked === true,
-      ...(data.user.avatarDataUrl ? { avatarDataUrl: data.user.avatarDataUrl } : {}),
-    };
-    localStorage.setItem(SESSION_KEY, JSON.stringify(nextSession));
-    return nextSession;
   } catch {
     return null;
   }
@@ -84,14 +53,7 @@ export function AccountView() {
   }, []);
 
   useEffect(() => {
-    void (async () => {
-      const s = await syncSessionFromServer();
-      if (s) {
-        setSession(s);
-        window.dispatchEvent(new Event(SITEFORGE_SESSION_EVENT));
-      }
-      setIsHydratingSession(false);
-    })();
+    setIsHydratingSession(false);
   }, []);
 
   useEffect(() => {
@@ -120,24 +82,11 @@ export function AccountView() {
     setAvatarStatus("");
     try {
       const dataUrl = await fileToResizedJpegDataUrl(file);
-      const res = await fetch("/api/auth/avatar", {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ avatarDataUrl: dataUrl }),
-      });
-      if (!res.ok) {
-        const details = (await res.json().catch(() => null)) as { error?: string } | null;
-        throw new Error(details?.error || "Could not save profile photo.");
-      }
-
-      const synced = await syncSessionFromServer();
-      if (synced) {
-        setSession(synced);
-        window.dispatchEvent(new Event(SITEFORGE_SESSION_EVENT));
-      } else {
-        refreshSession();
-      }
-      setAvatarStatus("Photo uploaded and saved to your account.");
+      const nextSession = { ...(readSession() || {}), avatarDataUrl: dataUrl };
+      localStorage.setItem(SESSION_KEY, JSON.stringify(nextSession));
+      setSession(nextSession);
+      window.dispatchEvent(new Event(SITEFORGE_SESSION_EVENT));
+      setAvatarStatus("Photo uploaded for this browser session.");
     } catch (err) {
       setAvatarError(err instanceof Error ? err.message : "Could not use that file.");
     }
@@ -147,20 +96,11 @@ export function AccountView() {
     setAvatarError("");
     setAvatarStatus("");
     try {
-      const res = await fetch("/api/auth/avatar", { method: "DELETE" });
-      if (!res.ok) {
-        const details = (await res.json().catch(() => null)) as { error?: string } | null;
-        throw new Error(details?.error || "Could not remove profile photo.");
-      }
-
-      const synced = await syncSessionFromServer();
-      if (synced) {
-        setSession(synced);
-        window.dispatchEvent(new Event(SITEFORGE_SESSION_EVENT));
-      } else {
-        refreshSession();
-      }
-      setAvatarStatus("Profile photo removed from your account.");
+      const nextSession = { ...(readSession() || {}), avatarDataUrl: undefined };
+      localStorage.setItem(SESSION_KEY, JSON.stringify(nextSession));
+      setSession(nextSession);
+      window.dispatchEvent(new Event(SITEFORGE_SESSION_EVENT));
+      setAvatarStatus("Profile photo removed.");
     } catch (err) {
       setAvatarError(err instanceof Error ? err.message : "Could not remove that photo.");
     }
@@ -181,13 +121,6 @@ export function AccountView() {
     if (!currentSession) return;
     const nextName = nameDraft.trim();
     if (!nextName) return;
-
-    const res = await fetch("/api/auth/me", {
-      method: "PATCH",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ fullName: nextName }),
-    });
-    if (!res.ok) return;
 
     const nextSession = { ...currentSession, fullName: nextName };
     localStorage.setItem(SESSION_KEY, JSON.stringify(nextSession));

@@ -1,6 +1,4 @@
 import { createHash } from "node:crypto";
-import type { DocumentReference, Transaction } from "firebase-admin/firestore";
-import { getFirestore } from "firebase-admin/firestore";
 import { getTrustedClientIp } from "@/lib/security/client-ip";
 
 const DEVICE_LOG_COLLECTION = "device_free_credit_log";
@@ -58,33 +56,33 @@ export function buildDeviceFingerprint(args: {
   return `${ID_PREFIX}_${hashPart(raw)}`;
 }
 
-function freeCreditDeviceRef(deviceFingerprint: string): DocumentReference {
-  const db = getFirestore();
-  return db.collection(DEVICE_LOG_COLLECTION).doc(deviceFingerprint);
-}
+type TransactionLike = {
+  get: (ref: string) => Promise<{ exists: boolean }>;
+  set: (ref: string, data: Record<string, unknown>, options?: { merge?: boolean }) => void;
+};
 
 export function getRequestClientIp(request: Request): string {
   return getTrustedClientIp(request);
 }
 
 export async function isDeviceAlreadyClaimedInTransaction(
-  tx: Transaction,
+  tx: TransactionLike,
   deviceFingerprint: string
 ): Promise<boolean> {
-  const ref = freeCreditDeviceRef(deviceFingerprint);
+  const ref = `${DEVICE_LOG_COLLECTION}/${deviceFingerprint}`;
   const snap = await tx.get(ref);
   return snap.exists;
 }
 
 export function writeDeviceFreeCreditLog(
-  tx: Transaction,
+  tx: TransactionLike,
   deviceFingerprint: string,
   uid: string,
   freeCreditsGiven: boolean
 ): void {
   const now = Date.now();
   tx.set(
-    freeCreditDeviceRef(deviceFingerprint),
+    `${DEVICE_LOG_COLLECTION}/${deviceFingerprint}`,
     {
       id: deviceFingerprint,
       deviceFingerprint,

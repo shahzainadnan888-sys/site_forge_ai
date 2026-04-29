@@ -1,6 +1,6 @@
 import { cookies } from "next/headers";
 import { cache } from "react";
-import { getFirebaseAdminAuth } from "@/lib/firebase/admin";
+import { verifySessionCookie } from "@/lib/auth/user-store";
 
 export const FIREBASE_SESSION_COOKIE = "siteforge_firebase_session";
 const SESSION_EXPIRES_MS = 60 * 60 * 24 * 5 * 1000; // 5 days
@@ -25,7 +25,7 @@ export const readVerifiedFirebaseSession = cache(async () => {
   if (!raw) return null;
 
   try {
-    const decoded = await getFirebaseAdminAuth().verifySessionCookie(raw, true);
+    const decoded = await verifySessionCookie(raw);
     return decoded;
   } catch {
     return null;

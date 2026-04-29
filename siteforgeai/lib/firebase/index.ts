@@ -1,47 +1,25 @@
-import { getApp, getApps, initializeApp, type FirebaseApp } from "firebase/app";
-import { getAuth, type Auth } from "firebase/auth";
-import { getFirestore, type Firestore } from "firebase/firestore";
-import { getStorage, type FirebaseStorage } from "firebase/storage";
-import { getFirebaseOptions } from "./config";
+import { initializeApp } from "firebase/app";
+import { getAuth, GoogleAuthProvider, signInWithPopup } from "firebase/auth";
+import { getFirestore } from "firebase/firestore";
+import { getStorage } from "firebase/storage";
 
-type Client = { app: FirebaseApp; auth: Auth; db: Firestore; storage: FirebaseStorage };
+const firebaseConfig = {
+  apiKey: process.env.NEXT_PUBLIC_FIREBASE_API_KEY,
+  authDomain: process.env.NEXT_PUBLIC_FIREBASE_AUTH_DOMAIN,
+  projectId: process.env.NEXT_PUBLIC_FIREBASE_PROJECT_ID,
+  storageBucket: process.env.NEXT_PUBLIC_FIREBASE_STORAGE_BUCKET,
+  messagingSenderId: process.env.NEXT_PUBLIC_FIREBASE_MESSAGING_SENDER_ID,
+  appId: process.env.NEXT_PUBLIC_FIREBASE_APP_ID,
+};
 
-let instance: Client | undefined;
+export const app = initializeApp(firebaseConfig);
+export const auth = getAuth(app);
+export const db = getFirestore(app);
+export const storage = getStorage(app);
+const provider = new GoogleAuthProvider();
 
-function getClient(): Client {
-  if (typeof window === "undefined") {
-    throw new Error("Firebase can only be used in the browser (e.g. Client Components).");
-  }
-  if (!instance) {
-    const app = getApps().length > 0 ? getApp() : initializeApp(getFirebaseOptions());
-    instance = {
-      app,
-      auth: getAuth(app),
-      db: getFirestore(app),
-      storage: getStorage(app),
-    };
-  }
-  return instance;
+export async function signInWithGoogle() {
+  return await signInWithPopup(auth, provider);
 }
 
-export const firebase = {
-  get app() {
-    return getClient().app;
-  },
-  get auth() {
-    return getClient().auth;
-  },
-  get db() {
-    return getClient().db;
-  },
-  get storage() {
-    return getClient().storage;
-  },
-} as const;
-
-export { getClient as getFirebaseClient };
-export { getFirebaseOptions } from "./config";
-export type { FirebaseApp } from "firebase/app";
-export type { Auth } from "firebase/auth";
-export type { Firestore } from "firebase/firestore";
-export type { FirebaseStorage } from "firebase/storage";
+export const firebase = { app, auth, db, storage } as const;

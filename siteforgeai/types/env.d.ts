@@ -10,8 +10,6 @@ declare namespace NodeJS {
     NEXT_PUBLIC_GOOGLE_API_KEY?: string;
     NEXT_PUBLIC_GOOGLE_CLIENT_ID?: string;
     FIREBASE_PROJECT_ID?: string;
-    FIREBASE_CLIENT_EMAIL?: string;
-    FIREBASE_PRIVATE_KEY?: string;
     /** Canonical app URL (https://siteforgeai.com) for publish links when request host is wrong (e.g. some proxies). */
     NEXT_PUBLIC_APP_URL?: string;
     NEXT_PUBLIC_ROOT_URL?: string;

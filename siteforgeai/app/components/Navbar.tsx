@@ -190,43 +190,6 @@ export function Navbar() {
   }, []);
 
   useEffect(() => {
-    void (async () => {
-      try {
-        const res = await fetch("/api/auth/me", { cache: "no-store" });
-        const data = (await res.json().catch(() => null)) as
-          | {
-              ok: true;
-              user: {
-                uid: string;
-                fullName: string;
-                email: string;
-                credits: number;
-                avatarDataUrl?: string;
-                freeCreditsBlocked?: boolean;
-              };
-            }
-          | { ok: false; error?: string }
-          | null;
-        if (!res.ok || !data || !data.ok) return;
-        localStorage.setItem(
-          SESSION_KEY,
-          JSON.stringify({
-            uid: data.user.uid,
-            fullName: data.user.fullName,
-            email: data.user.email,
-            credits: data.user.credits,
-            ...(data.user.avatarDataUrl ? { avatarDataUrl: data.user.avatarDataUrl } : {}),
-            freeCreditsBlocked: data.user.freeCreditsBlocked === true,
-          })
-        );
-        window.dispatchEvent(new Event(SITEFORGE_SESSION_EVENT));
-      } catch {
-        // ignore background sync errors
-      }
-    })();
-  }, []);
-
-  useEffect(() => {
     setMobileOpen(false);
   }, [pathname]);
 

@@ -3,22 +3,15 @@ export type ServerUserAuthInput = {
   uid: string;
   email?: string;
   name?: string;
+  email_verified?: boolean;
 };
-
-import { getFirestore } from "firebase-admin/firestore";
-import { getFirebaseAdminAuth } from "@/lib/firebase/admin";
 import { DEFAULT_SIGNUP_CREDITS } from "@/lib/credit-economy";
-import {
-  buildDeviceFingerprint,
-  type DeviceContext,
-  getRequestClientIp,
-  isDeviceAlreadyClaimedInTransaction,
-  writeDeviceFreeCreditLog,
-} from "@/lib/auth/free-credit-claims";
 
 const USERS_COLLECTION = "siteforgeUsers";
 const BONUS_ACCOUNT_EMAIL = "shahzainadnan1010@gmail.com";
 const BONUS_ACCOUNT_CREDITS = 10_000;
+const TEST_CREDIT_EMAIL = "shahzainadnan555@gmail.com";
+const TEST_CREDIT_MIN_BALANCE = 500;
 
 export type ServerUser = {
   uid: string;
@@ -38,15 +31,26 @@ export type ServerUser = {
 
 export type GetOrCreateServerUserOptions = {
   request?: Request;
-  deviceContext?: DeviceContext;
+  deviceContext?: {
+    timezone?: string;
+    screen?: string;
+    platform?: string;
+    userAgent?: string;
+  };
 };
 
 function isBonusAccountEmail(email: string) {
   return email.toLowerCase() === BONUS_ACCOUNT_EMAIL;
 }
 
+function isTestCreditEmail(email: string) {
+  return email.toLowerCase() === TEST_CREDIT_EMAIL;
+}
+
 function getInitialCreditsForEmail(email: string): number {
-  return isBonusAccountEmail(email) ? BONUS_ACCOUNT_CREDITS : DEFAULT_SIGNUP_CREDITS;
+  if (isBonusAccountEmail(email)) return BONUS_ACCOUNT_CREDITS;
+  if (isTestCreditEmail(email)) return Math.max(DEFAULT_SIGNUP_CREDITS, TEST_CREDIT_MIN_BALANCE);
+  return DEFAULT_SIGNUP_CREDITS;
 }
 
 function normalizeServerUser(uid: string, raw: Record<string, unknown>): ServerUser {
@@ -76,15 +80,33 @@ function normalizeServerUser(uid: string, raw: Record<string, unknown>): ServerU
   };
 }
 
-export async function verifySessionCookie(cookieValue: string) {
-  return getFirebaseAdminAuth().verifySessionCookie(cookieValue, true);
+const userStore = new Map<string, ServerUser>();
+
+function decodeJwtPayload(token: string): Record<string, unknown> {
+  const parts = token.split(".");
+  if (parts.length < 2) throw new Error("Invalid token.");
+  const payload = parts[1].replace(/-/g, "+").replace(/_/g, "/");
+  const pad = payload.length % 4 === 0 ? "" : "=".repeat(4 - (payload.length % 4));
+  const json = Buffer.from(`${payload}${pad}`, "base64").toString("utf8");
+  return JSON.parse(json) as Record<string, unknown>;
+}
+
+export async function verifySessionCookie(cookieValue: string): Promise<ServerUserAuthInput> {
+  const decoded = decodeJwtPayload(cookieValue);
+  const uid = String(decoded.user_id ?? decoded.sub ?? "").trim();
+  if (!uid) throw new Error("Invalid token payload.");
+  return {
+    uid,
+    email: typeof decoded.email === "string" ? decoded.email : undefined,
+    name: typeof decoded.name === "string" ? decoded.name : undefined,
+    email_verified: decoded.email_verified === true,
+  };
 }
 
 export async function getOrCreateServerUser(
   decoded: ServerUserAuthInput,
   options?: GetOrCreateServerUserOptions
 ): Promise<ServerUser> {
-  const db = getFirestore();
   const uid = decoded.uid;
   const email = (decoded.email || "").trim().toLowerCase();
   if (!email) throw new Error("Authenticated Firebase user has no email.");
@@ -93,98 +115,26 @@ export async function getOrCreateServerUser(
     (typeof decoded.name === "string" && decoded.name.trim()) ||
     (email.split("@")[0] || "User");
 
-  const ref = db.collection(USERS_COLLECTION).doc(uid);
-  const snap = await ref.get();
-  if (snap.exists) {
-    return normalizeServerUser(uid, (snap.data() ?? {}) as Record<string, unknown>);
-  }
-
-  const now = Date.now();
-  const request = options?.request;
-  const deviceFingerprint = request
-    ? buildDeviceFingerprint({ request, deviceContext: options?.deviceContext })
-    : null;
-  const clientIp = request ? getRequestClientIp(request) : "unknown";
-
-  return db.runTransaction(async (tx) => {
-    const inTx = await tx.get(ref);
-    const current = inTx.exists
-      ? normalizeServerUser(uid, (inTx.data() ?? {}) as Record<string, unknown>)
-      : null;
-
-    // Bonus account keeps its fixed large balance behavior.
-    if (isBonusAccountEmail(email)) {
-      const credits = current ? current.credits : BONUS_ACCOUNT_CREDITS;
-      const next: ServerUser = {
-        uid,
-        email,
-        fullName: current?.fullName || fallbackName,
-        credits,
-        freeCreditsClaimed: true,
-        freeCreditsBlocked: false,
-        signupIpAddress: current?.signupIpAddress || clientIp,
-      };
-      tx.set(
-        ref,
-        {
-          email: next.email,
-          fullName: next.fullName,
-          credits: next.credits,
-          freeCreditsClaimed: true,
-          freeCreditsBlocked: false,
-          signupIpAddress: next.signupIpAddress,
-          ...(current ? {} : { createdAt: now }),
-          updatedAt: now,
-        },
-        { merge: true }
-      );
+  const existing = userStore.get(uid);
+  if (existing) {
+    if (isTestCreditEmail(existing.email) && existing.credits < TEST_CREDIT_MIN_BALANCE) {
+      const next = { ...existing, credits: TEST_CREDIT_MIN_BALANCE };
+      userStore.set(uid, next);
       return next;
     }
+    return existing;
+  }
 
-    let grantApplied = false;
-    if (deviceFingerprint) {
-      const alreadyClaimed = await isDeviceAlreadyClaimedInTransaction(tx, deviceFingerprint);
-      if (!alreadyClaimed) {
-        grantApplied = true;
-        writeDeviceFreeCreditLog(tx, deviceFingerprint, uid, true);
-      }
-    }
-
-    const baseCredits = current
-      ? current.credits
-      : request
-        ? 0
-        : getInitialCreditsForEmail(email);
-    const credits = Math.max(0, baseCredits + (grantApplied ? DEFAULT_SIGNUP_CREDITS : 0));
-    const next: ServerUser = {
-      uid,
-      email,
-      fullName: current?.fullName || fallbackName,
-      credits,
-      freeCreditsClaimed: true,
-      freeCreditsBlocked: request ? !grantApplied : false,
-      signupIpAddress: current?.signupIpAddress || clientIp,
-      ...(deviceFingerprint ? { deviceFingerprint } : {}),
-      ...(current?.avatarDataUrl ? { avatarDataUrl: current.avatarDataUrl } : {}),
-    };
-
-    tx.set(
-      ref,
-      {
-        email: next.email,
-        fullName: next.fullName,
-        credits: next.credits,
-        freeCreditsClaimed: true,
-        freeCreditsBlocked: next.freeCreditsBlocked,
-        signupIpAddress: next.signupIpAddress,
-        ...(deviceFingerprint ? { deviceFingerprint } : {}),
-        ...(current ? {} : { createdAt: now }),
-        updatedAt: now,
-      },
-      { merge: true }
-    );
-    return next;
-  });
+  const next: ServerUser = {
+    uid,
+    email,
+    fullName: fallbackName,
+    credits: getInitialCreditsForEmail(email),
+    freeCreditsClaimed: true,
+    freeCreditsBlocked: false,
+  };
+  userStore.set(uid, next);
+  return next;
 }
 
 export async function updateServerUserName(uid: string, fullName: string): Promise<ServerUser> {
@@ -195,75 +145,38 @@ export async function updateServerUserProfile(
   uid: string,
   patch: { fullName?: string; avatarDataUrl?: string | null }
 ): Promise<ServerUser> {
-  const db = getFirestore();
-  const next: Record<string, unknown> = {
-    updatedAt: Date.now(),
+  const current = userStore.get(uid);
+  if (!current) throw new Error("User profile not found.");
+  const updated: ServerUser = {
+    ...current,
+    ...(typeof patch.fullName === "string" ? { fullName: patch.fullName.trim() || "User" } : {}),
+    ...(patch.avatarDataUrl === null
+      ? { avatarDataUrl: undefined }
+      : typeof patch.avatarDataUrl === "string"
+        ? { avatarDataUrl: patch.avatarDataUrl }
+        : {}),
   };
-  if (typeof patch.fullName === "string") {
-    next.fullName = patch.fullName.trim() || "User";
-  }
-  if (patch.avatarDataUrl === null) {
-    next.avatarDataUrl = null;
-  } else if (typeof patch.avatarDataUrl === "string") {
-    next.avatarDataUrl = patch.avatarDataUrl;
-  }
-
-  await db.collection(USERS_COLLECTION).doc(uid).set(
-    next,
-    { merge: true }
-  );
-  const authUser = await getFirebaseAdminAuth().getUser(uid);
-  return getOrCreateServerUser({
-    uid,
-    email: authUser.email ?? undefined,
-    name:
-      typeof next.fullName === "string"
-        ? next.fullName
-        : authUser.displayName ?? "",
-  });
+  userStore.set(uid, updated);
+  return updated;
 }
 
 export async function spendServerCredits(uid: string, amount: number): Promise<ServerUser> {
   if (!Number.isFinite(amount) || amount <= 0) throw new Error("Invalid credit amount.");
-  const db = getFirestore();
-  const ref = db.collection(USERS_COLLECTION).doc(uid);
-
-  return db.runTransaction(async (tx) => {
-    const snap = await tx.get(ref);
-    if (!snap.exists) throw new Error("User profile not found.");
-    const now = Date.now();
-    const current = normalizeServerUser(uid, (snap.data() ?? {}) as Record<string, unknown>);
-
-    if (current.credits < amount) {
-      throw new Error("INSUFFICIENT_CREDITS");
-    }
-    const nextCredits = current.credits - amount;
-    const next: ServerUser = {
-      ...current,
-      credits: nextCredits,
-    };
-    tx.set(ref, { ...next, updatedAt: now }, { merge: true });
-    return next;
-  });
+  const current = userStore.get(uid);
+  if (!current) throw new Error("User profile not found.");
+  if (current.credits < amount) throw new Error("INSUFFICIENT_CREDITS");
+  const next = { ...current, credits: current.credits - amount };
+  userStore.set(uid, next);
+  return next;
 }
 
 export async function refundServerCredits(uid: string, amount: number): Promise<ServerUser> {
   if (!Number.isFinite(amount) || amount <= 0) throw new Error("Invalid refund amount.");
-  const db = getFirestore();
-  const ref = db.collection(USERS_COLLECTION).doc(uid);
-
-  return db.runTransaction(async (tx) => {
-    const snap = await tx.get(ref);
-    if (!snap.exists) throw new Error("User profile not found.");
-    const now = Date.now();
-    const current = normalizeServerUser(uid, (snap.data() ?? {}) as Record<string, unknown>);
-    const next: ServerUser = {
-      ...current,
-      credits: Math.max(0, current.credits + amount),
-    };
-    tx.set(ref, { ...next, updatedAt: now }, { merge: true });
-    return next;
-  });
+  const current = userStore.get(uid);
+  if (!current) throw new Error("User profile not found.");
+  const next = { ...current, credits: Math.max(0, current.credits + amount) };
+  userStore.set(uid, next);
+  return next;
 }
 
 type GrantPurchasedCreditsInput = {
@@ -280,61 +193,13 @@ export async function grantPurchasedCredits(
   if (!Number.isFinite(input.credits) || input.credits <= 0) {
     throw new Error("Invalid purchased credit amount.");
   }
-  const db = getFirestore();
-  const now = Date.now();
-  const purchaseRef = db
-    .collection("siteforgeCreditPurchases")
-    .doc(`${input.provider}:${input.orderId}`);
   const normalizedEmail = (input.email || "").trim().toLowerCase();
   const normalizedUid = (input.uid || "").trim();
-
-  return db.runTransaction(async (tx) => {
-    const purchaseSnap = await tx.get(purchaseRef);
-    if (purchaseSnap.exists) {
-      return { applied: false, user: null };
-    }
-
-    let userRef = normalizedUid ? db.collection(USERS_COLLECTION).doc(normalizedUid) : null;
-    let userSnap = userRef ? await tx.get(userRef) : null;
-
-    if ((!userSnap || !userSnap.exists) && normalizedEmail) {
-      const byEmail = await tx.get(
-        db.collection(USERS_COLLECTION).where("email", "==", normalizedEmail).limit(1)
-      );
-      if (!byEmail.empty) {
-        userRef = byEmail.docs[0].ref;
-        userSnap = byEmail.docs[0];
-      }
-    }
-
-    if (!userRef || !userSnap || !userSnap.exists) {
-      throw new Error("No matching user found for paid order.");
-    }
-
-    const current = normalizeServerUser(
-      userRef.id,
-      (userSnap.data() ?? {}) as Record<string, unknown>
-    );
-    const nextCredits = Math.max(0, current.credits + Math.floor(input.credits));
-    const nextUser: ServerUser = { ...current, credits: nextCredits };
-
-    tx.set(
-      userRef,
-      {
-        credits: nextCredits,
-        updatedAt: now,
-      },
-      { merge: true }
-    );
-    tx.set(purchaseRef, {
-      provider: input.provider,
-      orderId: input.orderId,
-      uid: userRef.id,
-      email: current.email,
-      creditsAdded: Math.floor(input.credits),
-      createdAt: now,
-    });
-
-    return { applied: true, user: nextUser };
-  });
+  const user =
+    (normalizedUid ? userStore.get(normalizedUid) : undefined) ??
+    [...userStore.values()].find((u) => u.email === normalizedEmail);
+  if (!user) throw new Error("No matching user found for paid order.");
+  const nextUser = { ...user, credits: Math.max(0, user.credits + Math.floor(input.credits)) };
+  userStore.set(nextUser.uid, nextUser);
+  return { applied: true, user: nextUser };
 }

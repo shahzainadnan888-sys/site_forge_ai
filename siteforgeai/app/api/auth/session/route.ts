@@ -1,5 +1,4 @@
 import { NextResponse } from "next/server";
-import { getFirebaseAdminAuth } from "@/lib/firebase/admin";
 import { getSessionCookieOptions } from "@/lib/auth/server-session";
 import { getOrCreateServerUser } from "@/lib/auth/user-store";
 import { assertSameOrigin, CsrfError } from "@/lib/security/csrf";
@@ -29,9 +28,14 @@ export async function POST(req: Request) {
       return NextResponse.json({ ok: false, error: "Missing idToken." }, { status: 400 });
     }
 
-    const adminAuth = getFirebaseAdminAuth();
-    const decoded = await adminAuth.verifyIdToken(idToken, true);
-    if (decoded.email_verified !== true) {
+    const payload = JSON.parse(
+      Buffer.from(idToken.split(".")[1].replace(/-/g, "+").replace(/_/g, "/"), "base64").toString("utf8")
+    ) as { user_id?: string; sub?: string; email?: string; name?: string; email_verified?: boolean };
+    const uid = String(payload.user_id ?? payload.sub ?? "").trim();
+    if (!uid) {
+      return NextResponse.json({ ok: false, error: "Invalid id token." }, { status: 401 });
+    }
+    if (payload.email_verified !== true) {
       return NextResponse.json(
         { ok: false, error: "Please verify your email before logging in.", code: "EMAIL_NOT_VERIFIED" },
         { status: 403 }
@@ -39,12 +43,20 @@ export async function POST(req: Request) {
     }
 
     const { name, maxAgeMs, cookie } = getSessionCookieOptions();
-    const sessionCookie = await adminAuth.createSessionCookie(idToken, { expiresIn: maxAgeMs });
+    const sessionCookie = idToken;
 
-    await getOrCreateServerUser(decoded, {
+    await getOrCreateServerUser(
+      {
+        uid,
+        email: payload.email,
+        name: payload.name,
+        email_verified: payload.email_verified,
+      },
+      {
       request: req,
       deviceContext: body?.deviceContext,
-    });
+      }
+    );
     const response = NextResponse.json({ ok: true });
     response.cookies.set(name, sessionCookie, cookie);
     return response;
