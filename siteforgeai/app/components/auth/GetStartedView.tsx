@@ -1,8 +1,7 @@
 "use client";
 
-import { useRouter } from "next/navigation";
-import { useSearchParams } from "next/navigation";
-import { useState } from "react";
+import { Suspense, useState } from "react";
+import { useRouter, useSearchParams } from "next/navigation";
 import {
   createUserWithEmailAndPassword,
   GoogleAuthProvider,
@@ -11,21 +10,15 @@ import {
   signOut,
   signInWithEmailAndPassword,
   setPersistence,
-  signInWithRedirect,
   signInWithPopup,
   updateProfile,
 } from "firebase/auth";
+
 import { firebase } from "@/lib/firebase";
 import { setLocalStorageFreeCreditsClaimed } from "@/lib/client-free-credit-signals";
-import { SERVICE_FEATURE_CARDS } from "@/lib/service-feature-cards";
 import { emitSiteforgeSessionUpdate } from "@/lib/siteforge-credits";
 
 type AuthTab = "signin" | "signup";
-
-type FirebaseLoginError = {
-  code?: string;
-  message?: string;
-};
 
 type MeResponse = {
   ok: boolean;
@@ -56,18 +49,15 @@ function readDeviceContext() {
   };
 }
 
-function GoogleMark() {
+export function GetStartedView() {
   return (
-    <svg className="h-5 w-5" viewBox="0 0 24 24">
-      <path fill="#4285F4" d="M22.56 12.25c0-.78-.07-1.53-.2-2.25H12v4.26h5.92..." />
-      <path fill="#34A853" d="M12 23c2.97 0 5.46-.98 7.28-2.66l-3.57-2.77..." />
-      <path fill="#FBBC05" d="M5.84 14.09c-.22-.66-.35-1.36-.35-2.09..." />
-      <path fill="#EA4335" d="M12 5.38c1.62 0 3.06.56 4.21 1.64l3.15-3.15..." />
-    </svg>
+    <Suspense fallback={null}>
+      <GetStartedViewInner />
+    </Suspense>
   );
 }
 
-export function GetStartedView() {
+function GetStartedViewInner() {
   const router = useRouter();
   const searchParams = useSearchParams();
 
@@ -84,7 +74,7 @@ export function GetStartedView() {
   const [busyResendVerification, setBusyResendVerification] = useState(false);
 
   const SESSION_KEY = "siteforge-session";
-  const entryMessage = searchParams.get("message")?.trim() || "";
+  const entryMessage = searchParams?.get("message")?.trim() || "";
 
   const establishSession = async (idToken: string) => {
     const sessionRes = await fetch("/api/auth/session", {
@@ -105,7 +95,6 @@ export function GetStartedView() {
       throw new Error(me?.error || "Failed to load account.");
     }
 
-    // ✅ FIXED LINE (IMPORTANT)
     const isEmailVerified = me.user.emailVerified === true;
 
     if (!isEmailVerified) {
@@ -124,7 +113,9 @@ export function GetStartedView() {
         email: me.user.email,
         emailVerified: isEmailVerified,
         credits: me.user.credits,
-        ...(me.user.avatarDataUrl ? { avatarDataUrl: me.user.avatarDataUrl } : {}),
+        ...(me.user.avatarDataUrl
+          ? { avatarDataUrl: me.user.avatarDataUrl }
+          : {}),
         freeCreditsBlocked: me.user.freeCreditsBlocked === true,
       })
     );
