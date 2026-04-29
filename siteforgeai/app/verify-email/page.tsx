@@ -1,6 +1,6 @@
 "use client";
 
-import { useEffect, useState } from "react";
+import { Suspense, useEffect, useState } from "react";
 import Link from "next/link";
 import { useRouter, useSearchParams } from "next/navigation";
 import { onAuthStateChanged, sendEmailVerification } from "firebase/auth";
@@ -44,9 +44,17 @@ function readDeviceContext() {
 }
 
 export default function VerifyEmailPage() {
+  return (
+    <Suspense fallback={null}>
+      <VerifyEmailInner />
+    </Suspense>
+  );
+}
+
+function VerifyEmailInner() {
   const router = useRouter();
   const searchParams = useSearchParams();
-  const emailFromQuery = searchParams.get("email")?.trim() || "";
+  const emailFromQuery = searchParams?.get("email")?.trim() || "";
 
   const [hasAuthedUser, setHasAuthedUser] = useState(false);
   const [busy, setBusy] = useState(false);
@@ -73,14 +81,14 @@ export default function VerifyEmailPage() {
     } | null;
 
     if (!sessionRes.ok) {
-      throw new Error(sessionJson?.error || "Failed to create secure sign-in session.");
+      throw new Error(sessionJson?.error || "Failed to create session.");
     }
 
     const meRes = await fetch("/api/auth/me", { cache: "no-store" });
     const me = (await meRes.json().catch(() => null)) as MeResponse | null;
 
     if (!meRes.ok || !me?.ok || !me.user) {
-      throw new Error(me?.error || "Failed to load your account session.");
+      throw new Error(me?.error || "Failed to load account.");
     }
 
     if (me.user.emailVerified === false) {
@@ -97,9 +105,11 @@ export default function VerifyEmailPage() {
         uid: me.user.uid,
         fullName: me.user.fullName,
         email: me.user.email,
-        emailVerified: me.user.emailVerified === true, // ✅ FIXED LINE
+        emailVerified: me.user.emailVerified === true,
         credits: me.user.credits,
-        ...(me.user.avatarDataUrl ? { avatarDataUrl: me.user.avatarDataUrl } : {}),
+        ...(me.user.avatarDataUrl
+          ? { avatarDataUrl: me.user.avatarDataUrl }
+          : {}),
         freeCreditsBlocked: me.user.freeCreditsBlocked === true,
       })
     );
@@ -115,12 +125,12 @@ export default function VerifyEmailPage() {
 
     try {
       const user = firebase.auth.currentUser;
-      if (!user) throw new Error("Please sign in first to resend verification email.");
+      if (!user) throw new Error("Sign in first.");
 
       await sendEmailVerification(user);
-      setMessage("Verification email sent. Check your inbox.");
+      setMessage("Verification email sent.");
     } catch (e) {
-      setError(e instanceof Error ? e.message : "Could not send verification email.");
+      setError(e instanceof Error ? e.message : "Failed.");
     } finally {
       setBusy(false);
     }
@@ -134,14 +144,13 @@ export default function VerifyEmailPage() {
 
     try {
       const user = firebase.auth.currentUser;
-      if (!user) throw new Error("Please sign in first, then refresh verification status.");
+      if (!user) throw new Error("Sign in first.");
 
       await user.reload();
       const updated = firebase.auth.currentUser;
-      if (!updated) throw new Error("Please sign in first, then refresh verification status.");
 
-      if (!updated.emailVerified) {
-        setMessage("Email is not verified yet. Please check your inbox.");
+      if (!updated?.emailVerified) {
+        setMessage("Email not verified yet.");
         return;
       }
 
@@ -150,7 +159,7 @@ export default function VerifyEmailPage() {
 
       router.push("/dashboard");
     } catch (e) {
-      setError(e instanceof Error ? e.message : "Could not refresh verification status.");
+      setError(e instanceof Error ? e.message : "Failed.");
     } finally {
       setBusy(false);
     }
@@ -164,7 +173,9 @@ export default function VerifyEmailPage() {
         <section className="rounded-2xl border p-6 sm:p-8">
           <h1 className="text-3xl font-bold">Verify your email</h1>
 
-          <p className="mt-3 text-sm">Check your inbox to verify your email.</p>
+          <p className="mt-3 text-sm">
+            Check your inbox and verify your email.
+          </p>
 
           {emailFromQuery && (
             <p className="mt-2 text-sm">
