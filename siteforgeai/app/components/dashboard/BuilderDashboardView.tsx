@@ -15,10 +15,8 @@ import { enforceSinglePageAnchors } from "@/lib/sanitize-generated-html";
 import {
   claimLegacyProjectIntoUserKeys,
   getProjectLocalStorageKeys,
-  readPublishedSiteIdFromLocalStorage,
   readSessionUidFromLocalStorage,
   subscribeSessionUidChange,
-  writePublishedSiteIdToLocalStorage,
 } from "@/lib/siteforge-project-storage";
 
 const SESSION_KEY = "siteforge-session";
@@ -121,7 +119,7 @@ export function BuilderDashboardView() {
   const [publishModalOpen, setPublishModalOpen] = useState(false);
   const [publishSubmitting, setPublishSubmitting] = useState(false);
   const [publishResultUrl, setPublishResultUrl] = useState("");
-  const [publishResultSub, setPublishResultSub] = useState("");
+  const [publishName, setPublishName] = useState("");
   const [immersivePreview, setImmersivePreview] = useState(false);
   const [previewModeOn, setPreviewModeOn] = useState(true);
   const [themeColorA, setThemeColorA] = useState("#7c3aed");
@@ -138,7 +136,8 @@ export function BuilderDashboardView() {
   const [promptReferenceImageName, setPromptReferenceImageName] = useState("");
   const [editorTab, setEditorTab] = useState<"content" | "design">("content");
   const [toolbarPos, setToolbarPos] = useState({ x: 80, y: 80 });
-  const publishDisabled = !hasSession || stage !== "ready" || publishSubmitting;
+  const publishDisabled =
+    !hasSession || stage !== "ready" || publishSubmitting || publishName.trim().length < 3;
   const previewWrapperRef = useRef<HTMLDivElement>(null);
   const toolbarDragRef = useRef<{ dragging: boolean; dx: number; dy: number }>({
     dragging: false,
@@ -733,23 +732,33 @@ export function BuilderDashboardView() {
     setPublishSubmitting(true);
     try {
       const uid = readSessionUidFromLocalStorage();
-      const existingSiteId = readPublishedSiteIdFromLocalStorage(uid);
+      const normalizedPublishName = publishName
+        .trim()
+        .toLowerCase()
+        .replace(/\s+/g, "-")
+        .replace(/[^a-z0-9-]/g, "")
+        .replace(/-+/g, "-")
+        .replace(/^-+|-+$/g, "");
+      if (!normalizedPublishName) {
+        throw new Error("Please enter username or website name.");
+      }
       const res = await fetch("/api/publish", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         credentials: "include",
         body: JSON.stringify({
           html,
-          siteId: existingSiteId ?? undefined,
+          username: normalizedPublishName,
           ...(uid ? { userId: uid } : {}),
         }),
       });
       const data = (await res.json().catch(() => null)) as
         | {
             ok: true;
-            siteId: string;
+            success?: true;
+            username?: string;
             url: string;
-            urlSubdomain?: string;
+            message?: string;
           }
         | { ok: false; error?: string }
         | null;
@@ -757,9 +766,7 @@ export function BuilderDashboardView() {
         const msg = data && "error" in data ? data.error : "Publish failed.";
         throw new Error(msg || "Publish failed.");
       }
-      writePublishedSiteIdToLocalStorage(uid, data.siteId);
       setPublishResultUrl(data.url);
-      setPublishResultSub(typeof data.urlSubdomain === "string" ? data.urlSubdomain : "");
       setPublishModalOpen(true);
     } catch (e) {
       setPublishError(e instanceof Error ? e.message : "Could not publish.");
@@ -1023,7 +1030,7 @@ export function BuilderDashboardView() {
                   className="col-span-2 min-h-[2.5rem] rounded-full px-3 py-2 text-sm font-semibold text-[#072b14] sm:col-span-1"
                   style={{ background: "#86ef5b", opacity: publishDisabled ? 0.55 : 1, cursor: publishDisabled ? "not-allowed" : "pointer" }}
                 >
-                  {publishSubmitting ? "Publishing…" : "Publish Website"}
+                  {publishSubmitting ? "Publishing..." : "Publish Website"}
                 </button>
                 <button
                   type="button"
@@ -1057,6 +1064,16 @@ export function BuilderDashboardView() {
                 {publishError}
               </p>
             ) : null}
+            <div className="mt-3">
+              <input
+                type="text"
+                value={publishName}
+                onChange={(e) => setPublishName(e.target.value)}
+                placeholder="Enter username or website name (e.g. john-portfolio)"
+                className="h-10 w-full rounded-xl border bg-transparent px-3 text-sm outline-none"
+                style={{ borderColor: "var(--sf-border)", color: "var(--sf-text)" }}
+              />
+            </div>
           </article>
 
           <article className="sf-dashboard-panel animate-[fade-up_0.45s_ease-out_forwards] p-4 sm:p-5">
@@ -1535,7 +1552,6 @@ export function BuilderDashboardView() {
         open={publishModalOpen}
         onClose={() => setPublishModalOpen(false)}
         siteUrl={publishResultUrl}
-        subUrl={publishResultSub || undefined}
       />
     </section>
   );

@@ -6,10 +6,9 @@ type Props = {
   open: boolean;
   onClose: () => void;
   siteUrl: string;
-  subUrl?: string;
 };
 
-export function PublishSuccessModal({ open, onClose, siteUrl, subUrl }: Props) {
+export function PublishSuccessModal({ open, onClose, siteUrl }: Props) {
   const [copied, setCopied] = useState(false);
   if (!open) return null;
 
@@ -43,7 +42,7 @@ export function PublishSuccessModal({ open, onClose, siteUrl, subUrl }: Props) {
           className="text-lg font-semibold"
           style={{ color: "var(--sf-text)" }}
         >
-          Your site is live 🚀
+          Published successfully
         </h2>
         <p className="mt-2 text-sm" style={{ color: "var(--sf-text-muted)" }}>
           People can open your published page with the link below. Re-publishing updates the same URL.
@@ -53,11 +52,6 @@ export function PublishSuccessModal({ open, onClose, siteUrl, subUrl }: Props) {
             {siteUrl}
           </a>
         </div>
-        {subUrl ? (
-          <p className="mt-2 text-[11px]" style={{ color: "var(--sf-text-muted)" }}>
-            With DNS: <span className="break-all">{subUrl}</span>
-          </p>
-        ) : null}
         <div className="mt-5 flex flex-wrap gap-2">
           <button
             type="button"

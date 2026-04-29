@@ -35,13 +35,6 @@ export async function POST(req: Request) {
     if (!uid) {
       return NextResponse.json({ ok: false, error: "Invalid id token." }, { status: 401 });
     }
-    if (payload.email_verified !== true) {
-      return NextResponse.json(
-        { ok: false, error: "Please verify your email before logging in.", code: "EMAIL_NOT_VERIFIED" },
-        { status: 403 }
-      );
-    }
-
     const { name, maxAgeMs, cookie } = getSessionCookieOptions();
     const sessionCookie = idToken;
 

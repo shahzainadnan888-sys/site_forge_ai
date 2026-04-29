@@ -2,7 +2,7 @@
 
 import { useRouter } from "next/navigation";
 import { useSearchParams } from "next/navigation";
-import { Suspense, useState } from "react";
+import { Suspense, useEffect, useState } from "react";
 import {
   createUserWithEmailAndPassword,
   browserLocalPersistence,
@@ -18,6 +18,8 @@ import { SERVICE_FEATURE_CARDS } from "@/lib/service-feature-cards";
 import { emitSiteforgeSessionUpdate } from "@/lib/siteforge-credits";
 
 type AuthTab = "signin" | "signup";
+type SignupPhase = "form" | "otp";
+
 type FirebaseLoginError = {
   code?: string;
   message?: string;
@@ -38,6 +40,16 @@ type MeResponse = {
   error?: string;
 };
 
+const OTP_SECONDS = 5 * 60;
+const EMAIL_REGEX = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
+const OTP_REGEX = /^\d{6}$/;
+
+function formatMmSs(totalSeconds: number): string {
+  const m = Math.floor(totalSeconds / 60);
+  const s = totalSeconds % 60;
+  return `${String(m).padStart(2, "0")}:${String(s).padStart(2, "0")}`;
+}
+
 function readDeviceContext() {
   if (typeof window === "undefined") return {};
   const screenValue =
@@ -54,12 +66,7 @@ function readDeviceContext() {
 
 function GoogleMark() {
   return (
-    <svg
-      className="h-5 w-5 shrink-0"
-      viewBox="0 0 24 24"
-      aria-hidden
-      focusable="false"
-    >
+    <svg className="h-5 w-5 shrink-0" viewBox="0 0 24 24" aria-hidden focusable="false">
       <path
         fill="#4285F4"
         d="M22.56 12.25c0-.78-.07-1.53-.2-2.25H12v4.26h5.92c-.26 1.37-1.04 2.53-2.21 3.31v2.77h3.57c2.08-1.92 3.28-4.74 3.28-8.09z"
@@ -110,20 +117,35 @@ function GetStartedViewInner() {
   const router = useRouter();
   const searchParams = useSearchParams();
   const [tab, setTab] = useState<AuthTab>("signin");
+  const [signupPhase, setSignupPhase] = useState<SignupPhase>("form");
   const [busyEmail, setBusyEmail] = useState(false);
   const [busyGoogle, setBusyGoogle] = useState(false);
+  const [busyResendOtp, setBusyResendOtp] = useState(false);
   const [error, setError] = useState("");
   const [email, setEmail] = useState("");
   const [password, setPassword] = useState("");
+  const [otp, setOtp] = useState("");
   const [fullName, setFullName] = useState("");
   const [confirmPassword, setConfirmPassword] = useState("");
   const [showPassword, setShowPassword] = useState(false);
   const [showConfirmPassword, setShowConfirmPassword] = useState(false);
   const [info, setInfo] = useState("");
+  const [otpRemainingSec, setOtpRemainingSec] = useState(0);
   const [showResendVerification, setShowResendVerification] = useState(false);
   const [busyResendVerification, setBusyResendVerification] = useState(false);
   const SESSION_KEY = "siteforge-session";
   const entryMessage = searchParams.get("message")?.trim() || "";
+
+  const otpExpired = signupPhase === "otp" && otpRemainingSec <= 0;
+
+  /** Count down while on OTP step; OTP expires server-side after 5 minutes — UI mirrors that window. */
+  useEffect(() => {
+    if (signupPhase !== "otp") return;
+    const id = window.setInterval(() => {
+      setOtpRemainingSec((s) => Math.max(0, s - 1));
+    }, 1000);
+    return () => window.clearInterval(id);
+  }, [signupPhase]);
 
   const establishSession = async (idToken: string) => {
     const sessionRes = await fetch("/api/auth/session", {
@@ -139,10 +161,7 @@ function GetStartedViewInner() {
     const auth = firebase.auth;
     const user = auth.currentUser;
     if (!user) throw new Error("No authenticated user found.");
-    const isEmailVerified = user.emailVerified === true;
-    if (!isEmailVerified) {
-      throw new Error("Please verify your email before logging in.");
-    }
+
     const meRes = await fetch("/api/auth/me", { cache: "no-store" });
     const me = (await meRes.json().catch(() => null)) as MeResponse | null;
     if (!meRes.ok || !me?.ok || !me.user) {
@@ -159,7 +178,7 @@ function GetStartedViewInner() {
         uid: me.user.uid,
         fullName: me.user.fullName,
         email: me.user.email,
-        emailVerified: isEmailVerified,
+        emailVerified: user.emailVerified === true,
         credits: me.user.credits,
         ...(me.user.avatarDataUrl ? { avatarDataUrl: me.user.avatarDataUrl } : {}),
         freeCreditsBlocked: me.user.freeCreditsBlocked === true,
@@ -167,6 +186,108 @@ function GetStartedViewInner() {
     );
     emitSiteforgeSessionUpdate();
     router.push("/dashboard");
+  };
+
+  const sendOtpToEmail = async (cleanEmail: string) => {
+    const res = await fetch("/api/send-otp", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ email: cleanEmail }),
+    });
+    const data = (await res.json().catch(() => null)) as { success?: boolean; error?: string } | null;
+    if (!res.ok || !data?.success) {
+      throw new Error(data?.error || "Failed to send OTP.");
+    }
+    setEmail(cleanEmail);
+    setOtpRemainingSec(OTP_SECONDS);
+    setSignupPhase("otp");
+    setOtp("");
+    setInfo("OTP sent to your email");
+  };
+
+  const handleSignupStartOtp = async () => {
+    setError("");
+    setInfo("");
+    const cleanEmail = email.trim().toLowerCase();
+    if (!fullName.trim()) throw new Error("Full name is required for sign up.");
+    if (!cleanEmail || !password.trim()) throw new Error("Email and password are required.");
+    if (!EMAIL_REGEX.test(cleanEmail)) throw new Error("Please enter a valid email address.");
+    if (password.length < 6) throw new Error("Password must be at least 6 characters.");
+    if (password !== confirmPassword) throw new Error("Passwords do not match.");
+
+    await sendOtpToEmail(cleanEmail);
+  };
+
+  const handleResendOtp = async () => {
+    if (busyResendOtp || otpRemainingSec > 0) return;
+    setBusyResendOtp(true);
+    setError("");
+    try {
+      const cleanEmail = email.trim().toLowerCase();
+      if (!cleanEmail || !password.trim()) {
+        throw new Error("Email and password are required.");
+      }
+      await sendOtpToEmail(cleanEmail);
+      setInfo("New OTP sent to your email");
+    } catch (e) {
+      const err = e as FirebaseLoginError;
+      setError(err.message || "Could not resend OTP.");
+    } finally {
+      setBusyResendOtp(false);
+    }
+  };
+
+  const handleVerifyOtpAndCreateAccount = async () => {
+    setBusyEmail(true);
+    setError("");
+    setInfo("");
+    try {
+      const cleanEmail = email.trim().toLowerCase();
+      const cleanOtp = otp.replace(/\D/g, "").slice(0, 6);
+      if (!cleanEmail || !password.trim()) throw new Error("Email and password are required.");
+      if (otpExpired) throw new Error("OTP expired. Tap Resend OTP to get a new code.");
+      if (!OTP_REGEX.test(cleanOtp)) throw new Error("Please enter the 6-digit OTP.");
+
+      const verifyRes = await fetch("/api/verify-otp", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ email: cleanEmail, otp: cleanOtp }),
+      });
+      const verifyData = (await verifyRes.json().catch(() => null)) as
+        | { success?: boolean; error?: string }
+        | null;
+      if (!verifyRes.ok || !verifyData?.success) {
+        throw new Error(verifyData?.error || "Invalid OTP.");
+      }
+
+      setInfo("Verification successful");
+
+      const auth = firebase.auth;
+      if (!auth) throw new Error("Firebase auth not initialized. Check your env keys.");
+      await setPersistence(auth, browserLocalPersistence);
+      const credential = await createUserWithEmailAndPassword(auth, cleanEmail, password);
+      await updateProfile(credential.user, { displayName: fullName.trim() });
+
+      const idToken = await credential.user.getIdToken();
+      await establishSession(idToken);
+    } catch (e) {
+      const err = e as FirebaseLoginError;
+      const code = err?.code || "";
+      if (code === "auth/email-already-in-use") setError("Email already in use. Try Sign In.");
+      else if (code === "auth/invalid-email") setError("Please enter a valid email address.");
+      else if (code === "auth/weak-password") setError("Use a stronger password (at least 6 characters).");
+      else setError(err?.message || "Unable to complete verification.");
+    } finally {
+      setBusyEmail(false);
+    }
+  };
+
+  const resetSignupOtpFlow = () => {
+    setSignupPhase("form");
+    setOtp("");
+    setOtpRemainingSec(0);
+    setInfo("");
+    setError("");
   };
 
   const handleGoogle = async () => {
@@ -201,6 +322,11 @@ function GetStartedViewInner() {
   };
 
   const handleEmailAuth = async () => {
+    if (tab === "signup" && signupPhase === "otp") {
+      await handleVerifyOtpAndCreateAccount();
+      return;
+    }
+
     setBusyEmail(true);
     setError("");
     setInfo("");
@@ -216,16 +342,7 @@ function GetStartedViewInner() {
       }
 
       if (tab === "signup") {
-        if (!fullName.trim()) throw new Error("Full name is required for sign up.");
-        if (password.length < 6) throw new Error("Password must be at least 6 characters.");
-        if (password !== confirmPassword) throw new Error("Passwords do not match.");
-        const credential = await createUserWithEmailAndPassword(auth, cleanEmail, password);
-        await updateProfile(credential.user, { displayName: fullName.trim() });
-        await sendEmailVerification(credential.user);
-        await signOut(auth);
-        setTab("signin");
-        setInfo("Verification email sent. Please verify your email before logging in.");
-        setShowResendVerification(true);
+        await handleSignupStartOtp();
         return;
       }
 
@@ -281,6 +398,23 @@ function GetStartedViewInner() {
     }
   };
 
+  const primaryDisabled =
+    busyEmail ||
+    busyGoogle ||
+    (tab === "signup" && signupPhase === "otp" && (otpExpired || busyResendOtp));
+
+  const primaryLabel =
+    tab === "signin"
+      ? busyEmail
+        ? "Signing in..."
+        : "Sign in"
+      : signupPhase === "otp"
+        ? busyEmail
+          ? "Verifying..."
+          : "Verify OTP"
+        : busyEmail
+          ? "Sending OTP..."
+          : "Create account";
 
   return (
     <section className="sf-hide-inner-scrollbars relative min-h-[calc(100vh-4rem)] overflow-hidden">
@@ -378,18 +512,12 @@ function GetStartedViewInner() {
                           className="mt-2 h-14 rounded-lg sm:h-16"
                           style={{ background: "color-mix(in srgb, var(--sf-accent-from) 20%, transparent)" }}
                         />
-                        <p
-                          className="mt-2 text-[11px] leading-relaxed sm:text-xs"
-                          style={{ color: "var(--sf-text)" }}
-                        >
+                        <p className="mt-2 text-[11px] leading-relaxed sm:text-xs" style={{ color: "var(--sf-text)" }}>
                           {card.description}
                         </p>
                       </>
                     ) : (
-                      <p
-                        className="mt-2 text-[11px] leading-relaxed sm:text-xs"
-                        style={{ color: "var(--sf-text)" }}
-                      >
+                      <p className="mt-2 text-[11px] leading-relaxed sm:text-xs" style={{ color: "var(--sf-text)" }}>
                         {card.description}
                       </p>
                     )}
@@ -408,7 +536,10 @@ function GetStartedViewInner() {
               />
               <button
                 type="button"
-                onClick={() => setTab("signin")}
+                onClick={() => {
+                  setTab("signin");
+                  resetSignupOtpFlow();
+                }}
                 className="relative z-10 rounded-lg px-4 py-2 text-sm font-semibold"
                 style={{ color: tab === "signin" ? "white" : "var(--sf-text-muted)" }}
               >
@@ -416,7 +547,10 @@ function GetStartedViewInner() {
               </button>
               <button
                 type="button"
-                onClick={() => setTab("signup")}
+                onClick={() => {
+                  setTab("signup");
+                  resetSignupOtpFlow();
+                }}
                 className="relative z-10 rounded-lg px-4 py-2 text-sm font-semibold"
                 style={{ color: tab === "signup" ? "white" : "var(--sf-text-muted)" }}
               >
@@ -429,84 +563,143 @@ function GetStartedViewInner() {
                 <p className="text-sm" style={{ color: "var(--sf-text-muted)" }}>
                   {tab === "signin"
                     ? "Sign in to continue to your account."
-                    : "Create your account instantly with Google."}
+                    : signupPhase === "otp"
+                      ? "Enter the 6-digit code we emailed you. It expires in 5 minutes."
+                      : "Create your account instantly with Google."}
                 </p>
                 {entryMessage ? (
                   <p className="mt-3 text-sm" style={{ color: "var(--sf-accent-from)" }}>
                     {entryMessage}
                   </p>
                 ) : null}
-                {tab === "signup" && (
-                  <input
-                    type="text"
-                    value={fullName}
-                    onChange={(e) => setFullName(e.target.value)}
-                    placeholder="Full name"
-                    className="mt-4 h-11 w-full rounded-xl border bg-transparent px-4 text-sm outline-none"
-                    style={{ borderColor: "var(--sf-border)", color: "var(--sf-text)" }}
-                  />
-                )}
-                <input
-                  type="email"
-                  value={email}
-                  onChange={(e) => setEmail(e.target.value)}
-                  placeholder="Email"
-                  className="mt-4 h-11 w-full rounded-xl border bg-transparent px-4 text-sm outline-none"
-                  style={{ borderColor: "var(--sf-border)", color: "var(--sf-text)" }}
-                />
-                <div className="relative mt-3">
-                  <input
-                    type={showPassword ? "text" : "password"}
-                    value={password}
-                    onChange={(e) => setPassword(e.target.value)}
-                    placeholder="Password"
-                    className="h-11 w-full rounded-xl border bg-transparent px-4 pr-11 text-sm outline-none"
-                    style={{ borderColor: "var(--sf-border)", color: "var(--sf-text)" }}
-                  />
-                  <button
-                    type="button"
-                    onClick={() => setShowPassword((v) => !v)}
-                    className="absolute right-3 top-1/2 -translate-y-1/2"
-                    style={{ color: "var(--sf-text-muted)" }}
-                    aria-label={showPassword ? "Hide password" : "Show password"}
-                  >
-                    <EyeIcon open={showPassword} />
-                  </button>
-                </div>
-                {tab === "signup" && (
-                  <div className="relative mt-3">
+
+                {tab === "signup" && signupPhase === "otp" ? (
+                  <>
+                    <p className="mt-4 text-xs" style={{ color: "var(--sf-text-muted)" }}>
+                      Signing up as <span style={{ color: "var(--sf-text)" }}>{email}</span>
+                    </p>
+                    <div className="mt-2 flex items-center justify-between gap-2 text-xs font-medium">
+                      <span style={{ color: otpExpired ? "#f87171" : "var(--sf-accent-from)" }}>
+                        {otpExpired ? "OTP expired" : `Expires in ${formatMmSs(otpRemainingSec)}`}
+                      </span>
+                    </div>
                     <input
-                      type={showConfirmPassword ? "text" : "password"}
-                      value={confirmPassword}
-                      onChange={(e) => setConfirmPassword(e.target.value)}
-                      placeholder="Confirm password"
-                      className="h-11 w-full rounded-xl border bg-transparent px-4 pr-11 text-sm outline-none"
+                      type="text"
+                      value={otp}
+                      onChange={(e) => setOtp(e.target.value.replace(/\D/g, "").slice(0, 6))}
+                      placeholder="6-digit OTP"
+                      disabled={otpExpired}
+                      className="mt-3 h-11 w-full rounded-xl border bg-transparent px-4 text-sm outline-none tracking-[0.35em]"
+                      style={{ borderColor: "var(--sf-border)", color: "var(--sf-text)" }}
+                      inputMode="numeric"
+                      maxLength={6}
+                    />
+                  </>
+                ) : (
+                  <>
+                    {tab === "signup" && (
+                      <input
+                        type="text"
+                        value={fullName}
+                        onChange={(e) => setFullName(e.target.value)}
+                        placeholder="Full name"
+                        className="mt-4 h-11 w-full rounded-xl border bg-transparent px-4 text-sm outline-none"
+                        style={{ borderColor: "var(--sf-border)", color: "var(--sf-text)" }}
+                      />
+                    )}
+                    <input
+                      type="email"
+                      value={email}
+                      onChange={(e) => setEmail(e.target.value)}
+                      placeholder="Email"
+                      className="mt-4 h-11 w-full rounded-xl border bg-transparent px-4 text-sm outline-none"
                       style={{ borderColor: "var(--sf-border)", color: "var(--sf-text)" }}
                     />
-                    <button
-                      type="button"
-                      onClick={() => setShowConfirmPassword((v) => !v)}
-                      className="absolute right-3 top-1/2 -translate-y-1/2"
-                      style={{ color: "var(--sf-text-muted)" }}
-                      aria-label={showConfirmPassword ? "Hide confirm password" : "Show confirm password"}
-                    >
-                      <EyeIcon open={showConfirmPassword} />
-                    </button>
-                  </div>
+                    <div className="relative mt-3">
+                      <input
+                        type={showPassword ? "text" : "password"}
+                        value={password}
+                        onChange={(e) => setPassword(e.target.value)}
+                        placeholder="Password"
+                        className="h-11 w-full rounded-xl border bg-transparent px-4 pr-11 text-sm outline-none"
+                        style={{ borderColor: "var(--sf-border)", color: "var(--sf-text)" }}
+                      />
+                      <button
+                        type="button"
+                        onClick={() => setShowPassword((v) => !v)}
+                        className="absolute right-3 top-1/2 -translate-y-1/2"
+                        style={{ color: "var(--sf-text-muted)" }}
+                        aria-label={showPassword ? "Hide password" : "Show password"}
+                      >
+                        <EyeIcon open={showPassword} />
+                      </button>
+                    </div>
+                    {tab === "signup" && (
+                      <div className="relative mt-3">
+                        <input
+                          type={showConfirmPassword ? "text" : "password"}
+                          value={confirmPassword}
+                          onChange={(e) => setConfirmPassword(e.target.value)}
+                          placeholder="Confirm password"
+                          className="h-11 w-full rounded-xl border bg-transparent px-4 pr-11 text-sm outline-none"
+                          style={{ borderColor: "var(--sf-border)", color: "var(--sf-text)" }}
+                        />
+                        <button
+                          type="button"
+                          onClick={() => setShowConfirmPassword((v) => !v)}
+                          className="absolute right-3 top-1/2 -translate-y-1/2"
+                          style={{ color: "var(--sf-text-muted)" }}
+                          aria-label={showConfirmPassword ? "Hide confirm password" : "Show confirm password"}
+                        >
+                          <EyeIcon open={showConfirmPassword} />
+                        </button>
+                      </div>
+                    )}
+                  </>
                 )}
+
                 <button
                   type="button"
-                  onClick={handleEmailAuth}
-                  disabled={busyEmail}
+                  onClick={() => void handleEmailAuth()}
+                  disabled={primaryDisabled}
                   className="mt-4 inline-flex h-11 w-full items-center justify-center rounded-xl border px-4 text-sm font-semibold transition hover:opacity-95 disabled:cursor-not-allowed disabled:opacity-65"
                   style={{ borderColor: "var(--sf-border)", color: "var(--sf-text)" }}
                 >
-                  {busyEmail ? "Continuing..." : tab === "signin" ? "Sign in" : "Create account"}
+                  {primaryLabel}
                 </button>
+
+                {tab === "signup" && signupPhase === "otp" && otpExpired ? (
+                  <button
+                    type="button"
+                    onClick={() => void handleResendOtp()}
+                    disabled={busyResendOtp}
+                    className="mt-3 inline-flex h-11 w-full items-center justify-center rounded-xl border px-4 text-sm font-semibold transition hover:opacity-95 disabled:cursor-not-allowed disabled:opacity-65"
+                    style={{
+                      borderColor: "var(--sf-accent-from)",
+                      color: "var(--sf-accent-from)",
+                      background: "color-mix(in srgb, var(--sf-accent-from) 12%, transparent)",
+                    }}
+                  >
+                    {busyResendOtp ? "Sending..." : "Resend OTP"}
+                  </button>
+                ) : null}
+
+                {tab === "signup" && signupPhase === "otp" ? (
+                  <button
+                    type="button"
+                    onClick={resetSignupOtpFlow}
+                    disabled={busyEmail || busyResendOtp}
+                    className="mt-3 inline-flex h-10 w-full items-center justify-center rounded-xl border px-4 text-sm font-semibold transition hover:opacity-95 disabled:cursor-not-allowed disabled:opacity-65"
+                    style={{ borderColor: "var(--sf-border)", color: "var(--sf-text-muted)" }}
+                  >
+                    Back to sign up
+                  </button>
+                ) : null}
+
                 <button
                   type="button"
                   onClick={handleGoogle}
-                  disabled={busyGoogle}
+                  disabled={busyGoogle || (tab === "signup" && signupPhase === "otp")}
                   className="mt-4 inline-flex h-11 w-full items-center justify-center gap-2.5 rounded-xl border px-4 text-sm font-semibold transition hover:opacity-95 disabled:cursor-not-allowed disabled:opacity-65"
                   style={{ borderColor: "var(--sf-border)", color: "var(--sf-text)" }}
                 >

@@ -18,9 +18,6 @@ export default async function DashboardPage() {
   if (!user) {
     redirect("/get-started?message=Please%20first%20login%20to%20generate.");
   }
-  if (!user.emailVerified) {
-    redirect("/verify-email");
-  }
   return (
     <div className="relative flex min-h-full flex-1 flex-col">
       <FloatingBlobs />
