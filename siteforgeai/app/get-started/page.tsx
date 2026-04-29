@@ -13,7 +13,9 @@ export default function GetStartedPage() {
   return (
     <div className="min-h-full">
       <Navbar />
-      <GetStartedView />
+      <main className="flex-1">
+        <GetStartedView />
+      </main>
       <Footer />
     </div>
   );
