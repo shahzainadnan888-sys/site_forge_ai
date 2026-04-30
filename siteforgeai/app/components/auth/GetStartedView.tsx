@@ -9,6 +9,7 @@ import {
   sendEmailVerification,
   signOut,
   signInWithEmailAndPassword,
+  fetchSignInMethodsForEmail,
   setPersistence,
   updateProfile,
 } from "firebase/auth";
@@ -346,13 +347,14 @@ function GetStartedViewInner() {
         return;
       }
 
-      const credential = await signInWithEmailAndPassword(auth, cleanEmail, password);
-      if (!credential.user.emailVerified) {
-        await signOut(auth);
-        setError("Please verify your email before logging in.");
-        setShowResendVerification(true);
-        return;
+      const existingMethods = await fetchSignInMethodsForEmail(auth, cleanEmail);
+      if (!existingMethods.length) {
+        throw Object.assign(new Error("No account found. Please create an account first."), {
+          code: "auth/user-not-found",
+        });
       }
+
+      const credential = await signInWithEmailAndPassword(auth, cleanEmail, password);
       const idToken = await credential.user.getIdToken();
       await establishSession(idToken);
     } catch (e) {
