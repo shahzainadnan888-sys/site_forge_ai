@@ -136,16 +136,7 @@ export async function getOrCreateServerUser(
       })
     : undefined;
   if (existing) {
-    const duplicateClaim = hasPriorClaimByAnotherUser({
-      uid,
-      signupIpAddress,
-      deviceFingerprint,
-    });
-    const freeCreditsBlocked = existing.freeCreditsBlocked || duplicateClaim;
-    const expectedCredits = freeCreditsBlocked ? 0 : DEFAULT_SIGNUP_CREDITS;
     const shouldUpdate =
-      existing.credits !== expectedCredits ||
-      existing.freeCreditsBlocked !== freeCreditsBlocked ||
       (signupIpAddress &&
         signupIpAddress !== "unknown" &&
         existing.signupIpAddress !== signupIpAddress) ||
@@ -153,8 +144,6 @@ export async function getOrCreateServerUser(
     if (shouldUpdate) {
       const next = {
         ...existing,
-        credits: expectedCredits,
-        freeCreditsBlocked,
         ...(signupIpAddress && signupIpAddress !== "unknown" ? { signupIpAddress } : {}),
         ...(deviceFingerprint ? { deviceFingerprint } : {}),
       };

@@ -72,6 +72,28 @@ export function enforceSinglePageAnchors(html: string): string {
   output = output.replace(/\bhref=(["'])https?:\/\/(?:localhost|127\.0\.0\.1)(?::\d+)?[^"']*\1/gi, 'href="#home"');
   output = output.replace(/\baction=(["'])https?:\/\/(?:localhost|127\.0\.0\.1)(?::\d+)?[^"']*\1/gi, 'action="#home"');
   output = output.replace(/\baction=(["'])\/[^"']*\1/gi, 'action="#home"');
+  output = output.replace(/\bsrc=(["'])https?:\/\/(?:localhost|127\.0\.0\.1)(?::\d+)?[^"']*\1/gi, 'src="about:blank"');
+  output = output.replace(/\bsrc=(["'])\/[^"']*\1/gi, 'src="about:blank"');
+  output = output.replace(
+    /\b(on\w+)=("|')([\s\S]*?)(\2)/gi,
+    (full, attr, quote, code, closingQuote) => {
+      const script = String(code || "");
+      const hasLocalhostNav =
+        /https?:\/\/(?:localhost|127\.0\.0\.1)/i.test(script) ||
+        /\b(?:window\.)?location\.(?:href|assign|replace)\s*=\s*["'][^"']*\/[^"']*["']/i.test(script) ||
+        /\b(?:window\.)?location\.(?:assign|replace)\s*\(\s*["'][^"']*["']\s*\)/i.test(script);
+      if (!hasLocalhostNav) return full;
+      return `${attr}=${quote}event&&event.preventDefault&&event.preventDefault();location.hash='#home';${closingQuote}`;
+    }
+  );
+  output = output.replace(
+    /\b(?:window\.)?location\.(href|assign|replace)\s*=\s*["']https?:\/\/(?:localhost|127\.0\.0\.1)(?::\d+)?[^"']*["']/gi,
+    "location.hash='#home'"
+  );
+  output = output.replace(
+    /\b(?:window\.)?location\.(assign|replace)\s*\(\s*["']https?:\/\/(?:localhost|127\.0\.0\.1)(?::\d+)?[^"']*["']\s*\)/gi,
+    "location.hash='#home'"
+  );
   output = output.replace(
     /(<a\b[^>]*?)\s+target=(["'])(?:_parent|_top)\2/gi,
     "$1"
@@ -245,6 +267,28 @@ document.addEventListener('click',function(e){
   e.preventDefault();
   target.scrollIntoView({behavior:'smooth',block:'start'});
 });
+window.addEventListener('error',function(e){
+  var msg=String((e&&e.message)||'').toLowerCase();
+  if(msg.indexOf('localhost')!==-1&&msg.indexOf('refused')!==-1){
+    e.preventDefault&&e.preventDefault();
+  }
+},true);
+document.addEventListener('click',function(e){
+  var n=e.target;
+  while(n&&n.tagName!=='A'&&n.tagName!=='BUTTON'){n=n.parentElement;}
+  if(!n)return;
+  var href='';
+  if(n.tagName==='A') href=String(n.getAttribute('href')||'').trim();
+  var onclick=String(n.getAttribute('onclick')||'');
+  var badHref=/^https?:\/\/(?:localhost|127\.0\.0\.1)(?::\d+)?/i.test(href)||href.charAt(0)==='/';
+  var badOnclick=/https?:\/\/(?:localhost|127\.0\.0\.1)/i.test(onclick)||/location\.(href|assign|replace)/i.test(onclick);
+  if(badHref||badOnclick){
+    e.preventDefault();
+    var home=document.getElementById('home');
+    if(home&&home.scrollIntoView) home.scrollIntoView({behavior:'smooth',block:'start'});
+    location.hash='#home';
+  }
+},true);
 document.addEventListener('submit',function(e){
   var form=e.target;
   if(!(form&&form.tagName==='FORM'))return;
