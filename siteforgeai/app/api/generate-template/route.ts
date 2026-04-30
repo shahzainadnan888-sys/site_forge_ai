@@ -112,7 +112,7 @@ export async function POST(req: Request) {
       body: JSON.stringify({
         model: "gpt-4.1",
         temperature: 0.7,
-        max_tokens: 8000,
+        max_tokens: 6000,
         stream: true,
         messages: [
           { role: "system", content: SYSTEM_PROMPT_SINGLE },

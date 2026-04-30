@@ -63,6 +63,13 @@ function readHasSession(): boolean {
   }
 }
 
+function formatElapsed(totalSeconds: number): string {
+  const safe = Math.max(0, Math.floor(totalSeconds));
+  const mins = Math.floor(safe / 60);
+  const secs = safe % 60;
+  return `${String(mins).padStart(2, "0")}:${String(secs).padStart(2, "0")}`;
+}
+
 async function syncCreditsFromServer(): Promise<number | null> {
   try {
     const res = await fetch("/api/auth/me", { cache: "no-store" });
@@ -110,6 +117,7 @@ export function BuilderDashboardView() {
   const [generationError, setGenerationError] = useState("");
   const [stage, setStage] = useState<Stage>("idle");
   const [progress, setProgress] = useState(0);
+  const [generationElapsedSec, setGenerationElapsedSec] = useState(0);
   const [prompt, setPrompt] = useState(DEFAULT_DASHBOARD_PROMPT);
   const [generatedHtml, setGeneratedHtml] = useState("");
   const [previewDevice, setPreviewDevice] = useState<PreviewDevice>("pc");
@@ -256,6 +264,16 @@ export function BuilderDashboardView() {
   useEffect(() => {
     if (canGenerate) setCreditGateMessage("");
   }, [canGenerate]);
+
+  useEffect(() => {
+    if (stage !== "generating") return;
+    const startedAt = Date.now();
+    setGenerationElapsedSec(0);
+    const timer = window.setInterval(() => {
+      setGenerationElapsedSec(Math.floor((Date.now() - startedAt) / 1000));
+    }, 250);
+    return () => window.clearInterval(timer);
+  }, [stage]);
 
   const dispatchParticles = () => {
     window.requestAnimationFrame(() => {
@@ -523,6 +541,7 @@ export function BuilderDashboardView() {
       setPreviewModeOn(true);
       setImmersivePreview(false);
       setStage("ready");
+      setGenerationElapsedSec(0);
       setPromptReferenceImageDataUrl(null);
       setPromptReferenceImageName("");
       dispatchParticles();
@@ -534,6 +553,7 @@ export function BuilderDashboardView() {
       setGenerationError(error instanceof Error ? error.message : "Generation failed.");
       setStage("idle");
       setProgress(0);
+      setGenerationElapsedSec(0);
     }
   };
 
@@ -941,7 +961,9 @@ export function BuilderDashboardView() {
                 </div>
                 <div className="mt-4">
                   <div className="mb-2 flex items-center justify-between text-xs sm:text-sm">
-                    <span style={{ color: "var(--sf-text-muted)" }}>Generating website</span>
+                    <span style={{ color: "var(--sf-text-muted)" }}>
+                      Generating website · Elapsed {formatElapsed(generationElapsedSec)}
+                    </span>
                     <span style={{ color: "var(--sf-text)" }}>{progress}%</span>
                   </div>
                   <div className="h-2.5 overflow-hidden rounded-full" style={{ background: "color-mix(in srgb, var(--sf-card) 70%, var(--sf-border))" }}>
