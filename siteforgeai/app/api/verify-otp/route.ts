@@ -5,6 +5,7 @@ import { enforceRateLimit, RateLimitError } from "@/lib/security/rate-limit";
 import { logSecurityEvent } from "@/lib/security/security-log";
 
 const OTP_COLLECTION = "otp";
+const VERIFIED_EMAILS_COLLECTION = "verifiedEmails";
 
 type Body = {
   email?: string;
@@ -50,6 +51,10 @@ export async function POST(req: Request) {
       return NextResponse.json({ error: "OTP has expired." }, { status: 400 });
     }
 
+    await adminDb.collection(VERIFIED_EMAILS_COLLECTION).doc(email).set({
+      email,
+      verifiedAt: new Date(),
+    });
     await docRef.delete();
     return NextResponse.json({ success: true });
   } catch (error) {
