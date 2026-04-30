@@ -15,6 +15,8 @@ import { GENERATION_CREDIT_COST } from "@/lib/credit-economy";
 import { enforceSinglePageAnchors } from "@/lib/sanitize-generated-html";
 
 const OPENAI_API_URL = "https://api.openai.com/v1/chat/completions";
+const API_SAFETY_REPAIR_NOTE =
+  "Your previous draft violated API safety requirements. Regenerate from scratch with no external APIs and no unknown endpoints. For portfolio/landing pages, keep it fully static. If a contact form is included, use only fetch('/api/contact').";
 
 const SYSTEM_PROMPT_SINGLE =
   "You are a world-class frontend developer and designer. This tool outputs exactly ONE self-contained HTML file (a single-page application with in-page sections and #anchors only). You MUST NOT design or reference multiple top-level pages, multiple HTML files, or app routing. Generate a COMPLETE, production-ready SINGLE-PAGE website. CRITICAL — NAV (SPA only): - Give each main content section a matching id: id=\"home\" (or hero), id=\"features\", id=\"about\", id=\"pricing\", id=\"contact\" (add id=\"projects\" or id=\"services\" if used). - In the <nav> bar, use ONLY in-page hash links, e.g. <a href=\"#features\"> not href=\"/features\" and not a full site URL. - Do NOT use any real personal website, portfolio, or brand domain in href (no https:// to the user's or anyone's real site for in-app navigation; use only #section anchors and mailto: or tel: where a real address is actually needed). - NEVER use a <base> tag. - NEVER use target=\"_parent\" or target=\"_top\" on in-site links. STRICT RULES: - Output ONLY HTML code - No explanations - No markdown - No section labels like 'Hero Section' - Use SINGLE PAGE anchors only (href like #home, #features, #pricing) - NEVER use route links like /about, /pricing, /contact - NEVER generate admin/editor UI (no top control bars, no 'Theme/Colors/Fonts/Preview/Publish' panels, no builder controls) API SAFETY RULES (MANDATORY): - Generated websites must be standalone and work immediately after generation. - For portfolio and landing pages, generate fully static HTML/CSS/JS with NO backend calls. - NEVER call external APIs or external endpoints in JavaScript (no fetch(\"http://...\"), fetch(\"https://...\"), axios(\"http://...\"), axios(\"https://...\"), XMLHttpRequest to absolute URLs). - NEVER use unknown, placeholder, fake, or outdated endpoints (examples forbidden: /api/old-route, /api/v1/* unless explicitly requested, /api/submit, /api/form, /api/send, /api/lead). - If and only if a contact form needs submission, use exactly fetch('/api/contact') and no other API endpoint. - Do not include third-party API SDK calls, API keys, or remote data dependencies. THEME AND DEFAULTS: - If the user does not specify colors or a theme, use a clean, professional default: restrained palette (e.g. deep neutral background or soft off-white) with one accent color, strong contrast, and NO muddy low-contrast text. - If the user describes a style in their prompt, match it while keeping readability first. - If the user gives a detailed prompt, prioritize that detail and produce the highest-quality, context-aware output possible while preserving clean structure. TYPOGRAPHY AND READABILITY: - All body text and headings must be clearly visible: use font-weight 500-700 for important text, semibold or bold for headings, sufficient line-height (1.4-1.6), and contrast ratios that pass WCAG-style readability (no light gray on light backgrounds). - Establish clear visual hierarchy: large bold hero headline, subheadings, generous whitespace, aligned grids. LAYOUT: - Everything must be properly arranged, aligned, and balanced; use a consistent max-width content container, consistent section padding, and a clean column/grid system. - Use Flexbox/Grid; avoid clutter. TECH REQUIREMENTS: - Full HTML5 structure - CSS inside <style> - Use modern design principles - Use gradients, shadows, and spacing thoughtfully (not only heavy gradients) - Use Flexbox/Grid DESIGN: - If no theme is given, make it look like a premium, minimal SaaS or portfolio site: attractive, professional, and calm. - If a theme is given, follow it. - Add smooth animations (hover, transitions, subtle motion) - Buttons with clear hover/focus states SECTIONS TO ALWAYS INCLUDE: - Navbar - Hero (strong bold headline + CTA) - Features (cards with icons) - About or How it works - Pricing (3 cards) - Footer OUTPUT FORMAT: - Must start with <!DOCTYPE html> - Must end with </html> - Must be directly usable in browser FAIL IF: - Output is plain text - Output is not styled - Text is too faint, too small, or hard to read - Output has no animations - Output includes forbidden API/network calls";
@@ -91,6 +93,72 @@ function hasInvalidApiRouteUsage(html: string): boolean {
 
 function ndjsonLine(payload: unknown) {
   return `${JSON.stringify(payload)}\n`;
+}
+
+function extractMessageText(value: unknown): string {
+  if (typeof value === "string") return value;
+  if (!Array.isArray(value)) return "";
+  return value
+    .map((part) => {
+      if (typeof part === "string") return part;
+      if (part && typeof part === "object" && "text" in part) {
+        const text = (part as { text?: unknown }).text;
+        return typeof text === "string" ? text : "";
+      }
+      return "";
+    })
+    .join("")
+    .trim();
+}
+
+async function requestApiSafeRepairHtml(args: {
+  apiKey: string;
+  prompt: string;
+  referenceImageDataUrl: string;
+}): Promise<string> {
+  const messages = [
+    { role: "system", content: SYSTEM_PROMPT_SINGLE },
+    args.referenceImageDataUrl
+      ? {
+          role: "user",
+          content: [
+            {
+              type: "text",
+              text: `${args.prompt}\n\nUse the attached image as a strong design reference.\n\n${API_SAFETY_REPAIR_NOTE}`,
+            },
+            { type: "image_url", image_url: { url: args.referenceImageDataUrl } },
+          ],
+        }
+      : { role: "user", content: `${args.prompt}\n\n${API_SAFETY_REPAIR_NOTE}` },
+  ];
+
+  const repairRes = await fetch(OPENAI_API_URL, {
+    method: "POST",
+    headers: {
+      Authorization: `Bearer ${args.apiKey}`,
+      "Content-Type": "application/json",
+    },
+    body: JSON.stringify({
+      model: "gpt-4.1",
+      temperature: 0.65,
+      max_tokens: 6000,
+      stream: false,
+      messages,
+    }),
+    cache: "no-store",
+  });
+  if (!repairRes.ok) {
+    const details = await repairRes.text().catch(() => "");
+    throw new Error(`Repair generation failed: ${details.slice(0, 500)}`);
+  }
+  const payload = (await repairRes.json()) as {
+    choices?: Array<{ message?: { content?: unknown } }>;
+  };
+  const content = extractMessageText(payload?.choices?.[0]?.message?.content);
+  if (!content) {
+    throw new Error("Repair generation returned empty content.");
+  }
+  return content;
 }
 
 export async function POST(req: Request) {
@@ -238,17 +306,33 @@ export async function POST(req: Request) {
           );
           return;
         }
-        if (hasForbiddenNetworkCalls(normalized) || hasInvalidApiRouteUsage(normalized)) {
-          await refundServerCredits(currentUser.uid, GENERATION_CREDIT_COST);
-          await writer.write(
-            encoder.encode(
-              ndjsonLine({
-                type: "error",
-                error: "Generated output contains forbidden API/network calls. Please retry.",
-              })
-            )
-          );
-          return;
+        let finalOutput = normalized;
+        if (hasForbiddenNetworkCalls(finalOutput) || hasInvalidApiRouteUsage(finalOutput)) {
+          await writer.write(encoder.encode(ndjsonLine({ type: "progress", progress: 98 })));
+          const repairedRaw = await requestApiSafeRepairHtml({
+            apiKey,
+            prompt,
+            referenceImageDataUrl,
+          });
+          finalOutput = normalizeModelHtml(repairedRaw);
+          if (
+            !/^<!doctype html>/i.test(finalOutput) ||
+            !/<\/html>\s*$/i.test(finalOutput) ||
+            !looksLikeCompleteWebsite(finalOutput) ||
+            hasForbiddenNetworkCalls(finalOutput) ||
+            hasInvalidApiRouteUsage(finalOutput)
+          ) {
+            await refundServerCredits(currentUser.uid, GENERATION_CREDIT_COST);
+            await writer.write(
+              encoder.encode(
+                ndjsonLine({
+                  type: "error",
+                  error: "Generation could not produce a valid API-safe website. Please retry.",
+                })
+              )
+            );
+            return;
+          }
         }
 
         await writer.write(encoder.encode(ndjsonLine({ type: "progress", progress: 100 })));
@@ -258,7 +342,7 @@ export async function POST(req: Request) {
               type: "result",
               ok: true,
               appType: "single",
-              html: enforceSinglePageAnchors(normalized),
+              html: enforceSinglePageAnchors(finalOutput),
               remainingCredits: chargedUser.credits,
             })
           )
