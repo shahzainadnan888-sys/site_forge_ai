@@ -148,11 +148,11 @@ function GetStartedViewInner() {
     return () => window.clearInterval(id);
   }, [signupPhase]);
 
-  const establishSession = async (idToken: string) => {
+  const establishSession = async (idToken: string, grantSignupCredits = false) => {
     const sessionRes = await fetch("/api/auth/session", {
       method: "POST",
       headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ idToken, deviceContext: readDeviceContext() }),
+      body: JSON.stringify({ idToken, grantSignupCredits, deviceContext: readDeviceContext() }),
     });
     if (!sessionRes.ok) {
       const details = (await sessionRes.json().catch(() => null)) as { error?: string } | null;
@@ -270,7 +270,7 @@ function GetStartedViewInner() {
       await updateProfile(credential.user, { displayName: fullName.trim() });
 
       const idToken = await credential.user.getIdToken();
-      await establishSession(idToken);
+      await establishSession(idToken, true);
     } catch (e) {
       const err = e as FirebaseLoginError;
       const code = err?.code || "";
@@ -304,7 +304,7 @@ function GetStartedViewInner() {
       await setPersistence(auth, browserLocalPersistence);
       const credential = await signInWithGoogle();
       const idToken = await credential.user.getIdToken();
-      await establishSession(idToken);
+      await establishSession(idToken, false);
     } catch (e) {
       const err = e as FirebaseLoginError;
       const msg = err?.message || "Unable to continue with Google sign-in.";
@@ -356,7 +356,7 @@ function GetStartedViewInner() {
 
       const credential = await signInWithEmailAndPassword(auth, cleanEmail, password);
       const idToken = await credential.user.getIdToken();
-      await establishSession(idToken);
+      await establishSession(idToken, false);
     } catch (e) {
       const err = e as FirebaseLoginError;
       const code = err?.code || "";

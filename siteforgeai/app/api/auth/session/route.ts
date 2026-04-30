@@ -9,6 +9,7 @@ export const runtime = "nodejs";
 
 type Body = {
   idToken?: string;
+  grantSignupCredits?: boolean;
   deviceContext?: {
     timezone?: string;
     screen?: string;
@@ -47,6 +48,7 @@ export async function POST(req: Request) {
       },
       {
       request: req,
+      grantSignupCredits: body?.grantSignupCredits === true,
       deviceContext: body?.deviceContext,
       }
     );

@@ -28,6 +28,7 @@ export type ServerUser = {
 
 export type GetOrCreateServerUserOptions = {
   request?: Request;
+  grantSignupCredits?: boolean;
   deviceContext?: {
     timezone?: string;
     screen?: string;
@@ -128,6 +129,7 @@ export async function getOrCreateServerUser(
     (email.split("@")[0] || "User");
 
   const existing = userStore.get(uid);
+  const grantSignupCredits = options?.grantSignupCredits === true;
   const signupIpAddress = options?.request ? getRequestClientIp(options.request) : undefined;
   const deviceFingerprint = options?.request
     ? buildDeviceFingerprint({
@@ -158,12 +160,13 @@ export async function getOrCreateServerUser(
     signupIpAddress,
     deviceFingerprint,
   });
+  const shouldGrantSignupCredits = grantSignupCredits && !alreadyClaimed;
 
   const next: ServerUser = {
     uid,
     email,
     fullName: fallbackName,
-    credits: alreadyClaimed ? 0 : getInitialCreditsForEmail(email),
+    credits: shouldGrantSignupCredits ? getInitialCreditsForEmail(email) : 0,
     freeCreditsClaimed: true,
     freeCreditsBlocked: alreadyClaimed,
     ...(signupIpAddress ? { signupIpAddress } : {}),
