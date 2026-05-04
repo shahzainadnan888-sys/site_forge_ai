@@ -4,6 +4,7 @@ import { useEffect, useMemo, useState } from "react";
 import Link from "next/link";
 import { usePathname } from "next/navigation";
 import { SITE_LOGO_PATH } from "@/lib/brand";
+import { syncSessionCreditsFromServer } from "@/lib/client-session-sync";
 import { SITEFORGE_SESSION_EVENT } from "@/lib/siteforge-credits";
 import { Tooltip } from "@/app/components/Tooltip";
 
@@ -179,6 +180,19 @@ export function Navbar() {
     };
 
     readSession();
+    void (async () => {
+      try {
+        const raw = localStorage.getItem(SESSION_KEY);
+        if (!raw) return;
+        const u = JSON.parse(raw) as { uid?: string };
+        if (!u?.uid?.trim()) return;
+        const next = await syncSessionCreditsFromServer();
+        if (typeof next === "number") setCredits(next);
+      } catch {
+        // ignore
+      }
+    })();
+
     window.addEventListener("storage", readSession);
     window.addEventListener("focus", readSession);
     window.addEventListener(SITEFORGE_SESSION_EVENT, readSession);

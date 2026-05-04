@@ -1,43 +1,70 @@
 "use client";
 
-import { useState } from "react";
-import { DEFAULT_SIGNUP_CREDITS } from "@/lib/credit-economy";
+import { useRouter } from "next/navigation";
+import { useEffect, useState } from "react";
+import { syncSessionCreditsFromServer } from "@/lib/client-session-sync";
+import { DEFAULT_SIGNUP_CREDITS, optionLabelForCredits } from "@/lib/credit-economy";
+import { goToLemonSqueezyCheckoutForCredits, hasLemonSqueezyCheckoutForCredits } from "@/lib/lemon-squeezy-checkout";
+import { LEMON_CREDIT_PACKS } from "@/lib/lemon-squeezy-credit-packs";
+import { SITEFORGE_SESSION_EVENT } from "@/lib/siteforge-credits";
 
-const LEMONSQUEEZY_BUY_CREDITS_URL =
-  "https://siteforgeai.lemonsqueezy.com/checkout/buy/2b0a7156-47d4-4fc4-b507-6f3fc96f6fe7";
+const SESSION_KEY = "siteforge-session";
 
-const CREDIT_PACK_OPTIONS: { value: number; label: string }[] = [
-  { value: 10, label: "10 credits — $1" },
-  { value: 25, label: "25 credits — $2.5" },
-  { value: 35, label: "35 credits — $3.5" },
-  { value: 50, label: "50 credits — $5" },
-  { value: 100, label: "100 credits — $10" },
-  { value: 250, label: "250 credits — $25" },
-  { value: 500, label: "500 credits — $50" },
-  { value: 1000, label: "1000 credits — $100" },
-];
+const CREDIT_PACK_OPTIONS = LEMON_CREDIT_PACKS.map((value) => ({
+  value,
+  label: optionLabelForCredits(value),
+}));
+
+function readHasSignedInSession(): boolean {
+  if (typeof window === "undefined") return false;
+  try {
+    const raw = localStorage.getItem(SESSION_KEY);
+    if (!raw) return false;
+    const s = JSON.parse(raw) as { uid?: string; email?: string } | null;
+    return Boolean(s?.uid?.trim() && s?.email?.trim());
+  } catch {
+    return false;
+  }
+}
 
 export function PlansView() {
-  const [credits, setCredits] = useState<number>(100);
-  const checkoutUrl = (() => {
-    const base = new URL(LEMONSQUEEZY_BUY_CREDITS_URL);
-    try {
-      const raw = localStorage.getItem("siteforge-session");
-      const session = raw
-        ? (JSON.parse(raw) as { email?: string; uid?: string } | null)
-        : null;
-      const email = session?.email?.trim();
-      const uid = session?.uid?.trim();
-      if (email) base.searchParams.set("checkout[email]", email);
-      if (uid) base.searchParams.set("checkout[custom][uid]", uid);
-    } catch {
-      // Ignore localStorage parse errors and continue to checkout.
+  const router = useRouter();
+  const [credits, setCredits] = useState<number>(LEMON_CREDIT_PACKS[0]);
+  const [isSignedIn, setIsSignedIn] = useState(false);
+  const canCheckout = hasLemonSqueezyCheckoutForCredits(credits);
+
+  useEffect(() => {
+    const sync = () => setIsSignedIn(readHasSignedInSession());
+    sync();
+    window.addEventListener("storage", sync);
+    window.addEventListener("focus", sync);
+    window.addEventListener(SITEFORGE_SESSION_EVENT, sync);
+    return () => {
+      window.removeEventListener("storage", sync);
+      window.removeEventListener("focus", sync);
+      window.removeEventListener(SITEFORGE_SESSION_EVENT, sync);
+    };
+  }, []);
+
+  /** Pull latest credit balance from Firestore when visiting Plans (e.g. after env / server updates). */
+  useEffect(() => {
+    if (!isSignedIn) return;
+    void syncSessionCreditsFromServer();
+  }, [isSignedIn]);
+
+  const handleBuyCredits = () => {
+    if (!readHasSignedInSession()) {
+      router.push(
+        "/get-started?message=" + encodeURIComponent("Please sign in to buy credits. Your purchase is tied to your account.")
+      );
+      return;
     }
-    // Optional trace metadata for analytics/debugging.
-    base.searchParams.set("checkout[custom][selected_credits]", String(credits));
-    base.searchParams.set("checkout[custom][source]", "plans_page");
-    return base.toString();
-  })();
+    if (!canCheckout) return;
+    goToLemonSqueezyCheckoutForCredits(credits);
+  };
+
+  const buyDisabled = isSignedIn && !canCheckout;
+  const buyLabel = isSignedIn ? "Buy Credits" : "Sign in to buy credits";
 
   return (
     <>
@@ -98,17 +125,33 @@ export function PlansView() {
             <li>1 edit = 2 credits</li>
           </ul>
 
-          <a
-            href={checkoutUrl}
-            target="_blank"
-            rel="noopener noreferrer"
-            className="sf-cta-glow mt-8 inline-block w-full rounded-full px-6 py-3.5 text-center text-base font-semibold text-white"
+          {!isSignedIn && (
+            <p className="mt-6 text-sm" style={{ color: "var(--sf-text-muted)" }}>
+              You need to be signed in so credits are added to the right account after checkout.
+            </p>
+          )}
+
+          {isSignedIn && !canCheckout && (
+            <p className="mt-6 text-sm" style={{ color: "var(--sf-text-muted)" }}>
+              Credit purchases are not available right now. Please try again later or use{" "}
+              <a href="/contact#support" className="underline underline-offset-2">
+                support
+              </a>
+              .
+            </p>
+          )}
+
+          <button
+            type="button"
+            disabled={buyDisabled}
+            onClick={handleBuyCredits}
+            className="sf-cta-glow mt-8 w-full rounded-full px-6 py-3.5 text-center text-base font-semibold text-white disabled:cursor-not-allowed disabled:opacity-50"
             style={{
               background: `linear-gradient(90deg, var(--sf-accent-from), var(--sf-accent-to))`,
             }}
           >
-            Buy Credits
-          </a>
+            {buyLabel}
+          </button>
 
           <p className="mt-4 text-center text-xs sm:text-sm" style={{ color: "var(--sf-text-muted)" }}>
             New users get {DEFAULT_SIGNUP_CREDITS} credits free

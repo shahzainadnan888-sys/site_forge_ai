@@ -1,4 +1,4 @@
-/** Single source of truth for credit costs and signup grant. */
+/** Single source of truth for credit costs and signup grant (free tier on first qualifying signup). */
 export const DEFAULT_SIGNUP_CREDITS = 16;
 export const GENERATION_CREDIT_COST = 10;
 export const EDIT_APPLY_CREDIT_COST = 2;

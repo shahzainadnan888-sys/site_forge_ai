@@ -20,6 +20,22 @@ declare namespace NodeJS {
     NEXT_PUBLIC_ROOT_DOMAIN?: string;
     FIREBASE_STORAGE_BUCKET?: string;
     LEMONSQUEEZY_WEBHOOK_SECRET?: string;
+    /** Server-only Lemon API key (Settings → API). Used to create real checkout URLs. */
+    LEMONSQUEEZY_API_KEY?: string;
+    /** Numeric store id from Lemon (Settings → Stores). May duplicate NEXT_PUBLIC for client-side gating. */
+    LEMONSQUEEZY_STORE_ID?: string;
+    /** Same as store id — public so the Plans page can enable Buy when using API checkout only. */
+    NEXT_PUBLIC_LEMONSQUEEZY_STORE_ID?: string;
+    /** Fallback checkout when a tier-specific URL is not set. */
+    NEXT_PUBLIC_LEMONSQUEEZY_CHECKOUT_URL?: string;
+    NEXT_PUBLIC_LEMONSQUEEZY_CHECKOUT_10?: string;
+    NEXT_PUBLIC_LEMONSQUEEZY_CHECKOUT_25?: string;
+    NEXT_PUBLIC_LEMONSQUEEZY_CHECKOUT_35?: string;
+    NEXT_PUBLIC_LEMONSQUEEZY_CHECKOUT_50?: string;
+    NEXT_PUBLIC_LEMONSQUEEZY_CHECKOUT_100?: string;
+    NEXT_PUBLIC_LEMONSQUEEZY_CHECKOUT_250?: string;
+    NEXT_PUBLIC_LEMONSQUEEZY_CHECKOUT_500?: string;
+    NEXT_PUBLIC_LEMONSQUEEZY_CHECKOUT_1000?: string;
     /** Optional: mirror each publish to a Vercel static project (one project per siteId). */
     VERCEL_TOKEN?: string;
     /** Team scope; omit for Hobby / personal. */

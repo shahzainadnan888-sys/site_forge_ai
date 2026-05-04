@@ -82,8 +82,7 @@ export function GlobalSignUpToast() {
         }}
       >
         <p className="font-semibold" style={{ color: "var(--sf-text)" }}>
-          Sign up to get {DEFAULT_SIGNUP_CREDITS} credits and start building your first website for completely
-          free.
+          Sign up to get {DEFAULT_SIGNUP_CREDITS} free credits—enough to try your first AI website generation.
         </p>
         <div className="mt-2.5">
           <Link

@@ -5,10 +5,17 @@ export type ServerUserAuthInput = {
   name?: string;
   email_verified?: boolean;
 };
-import { DEFAULT_SIGNUP_CREDITS } from "@/lib/credit-economy";
+import { createHash } from "node:crypto";
+import { FieldValue } from "firebase-admin/firestore";
 import { buildDeviceFingerprint, getRequestClientIp } from "@/lib/auth/free-credit-claims";
+import { adminDb } from "@/lib/firebase/admin";
+import { getInitialCreditsForEmail } from "@/lib/siteforge-credits";
 
 const USERS_COLLECTION = "siteforgeUsers";
+/** Idempotency for Lemon Squeezy webhooks (one doc per Lemon order id). */
+const LEMONSQUEEZY_PROCESSED_ORDERS_COLLECTION = "lemonsqueezy_processed_orders";
+const DEVICE_FREE_CREDIT_COLLECTION = "device_free_credit_log";
+const SIGNUP_IP_FREE_CREDIT_COLLECTION = "signup_ip_free_credit_log";
 
 export type ServerUser = {
   uid: string;
@@ -37,8 +44,47 @@ export type GetOrCreateServerUserOptions = {
   };
 };
 
-function getInitialCreditsForEmail(_email: string): number {
-  return DEFAULT_SIGNUP_CREDITS;
+function signupIpClaimDocId(ip: string): string | null {
+  const normalized = ip.trim().toLowerCase();
+  if (!normalized || normalized === "unknown") return null;
+  const hash = createHash("sha256").update(normalized, "utf8").digest("hex").slice(0, 40);
+  return `sfcip_v1_${hash}`;
+}
+
+function userToFirestore(user: ServerUser): Record<string, unknown> {
+  const payload: Record<string, unknown> = {
+    uid: user.uid,
+    email: user.email,
+    fullName: user.fullName,
+    credits: user.credits,
+    freeCreditsClaimed: user.freeCreditsClaimed,
+    freeCreditsBlocked: user.freeCreditsBlocked,
+    updatedAt: FieldValue.serverTimestamp(),
+  };
+  if (user.signupIpAddress) payload.signupIpAddress = user.signupIpAddress;
+  if (user.deviceFingerprint) payload.deviceFingerprint = user.deviceFingerprint;
+  if (user.deviceId) payload.deviceId = user.deviceId;
+  if (user.avatarDataUrl) payload.avatarDataUrl = user.avatarDataUrl;
+  return payload;
+}
+
+async function readUserFromFirestore(uid: string): Promise<ServerUser | null> {
+  const snap = await adminDb.collection(USERS_COLLECTION).doc(uid).get();
+  if (!snap.exists) return null;
+  return normalizeServerUser(uid, snap.data() as Record<string, unknown>);
+}
+
+async function writeUserToFirestore(user: ServerUser): Promise<void> {
+  await adminDb.collection(USERS_COLLECTION).doc(user.uid).set(userToFirestore(user), { merge: true });
+}
+
+async function findUserByEmailInFirestore(email: string): Promise<ServerUser | null> {
+  const normalized = email.trim().toLowerCase();
+  if (!normalized) return null;
+  const qs = await adminDb.collection(USERS_COLLECTION).where("email", "==", normalized).limit(1).get();
+  if (qs.empty) return null;
+  const doc = qs.docs[0];
+  return normalizeServerUser(doc.id, doc.data() as Record<string, unknown>);
 }
 
 function normalizeServerUser(uid: string, raw: Record<string, unknown>): ServerUser {
@@ -70,29 +116,12 @@ function normalizeServerUser(uid: string, raw: Record<string, unknown>): ServerU
 
 const userStore = new Map<string, ServerUser>();
 
-function hasPriorClaimByAnotherUser(args: {
-  uid: string;
-  signupIpAddress?: string;
-  deviceFingerprint?: string;
-}): boolean {
-  const signupIpAddress =
-    typeof args.signupIpAddress === "string" &&
-    args.signupIpAddress.length > 0 &&
-    args.signupIpAddress !== "unknown"
-      ? args.signupIpAddress
-      : "";
-  const deviceFingerprint =
-    typeof args.deviceFingerprint === "string" && args.deviceFingerprint.length > 0
-      ? args.deviceFingerprint
-      : "";
-  if (!signupIpAddress && !deviceFingerprint) return false;
-
-  for (const other of userStore.values()) {
-    if (other.uid === args.uid) continue;
-    if (signupIpAddress && other.signupIpAddress === signupIpAddress) return true;
-    if (deviceFingerprint && other.deviceFingerprint === deviceFingerprint) return true;
-  }
-  return false;
+async function ensureUserInMemory(uid: string): Promise<ServerUser | null> {
+  const cached = userStore.get(uid);
+  if (cached) return cached;
+  const loaded = await readUserFromFirestore(uid);
+  if (loaded) userStore.set(uid, loaded);
+  return loaded;
 }
 
 function decodeJwtPayload(token: string): Record<string, unknown> {
@@ -128,7 +157,6 @@ export async function getOrCreateServerUser(
     (typeof decoded.name === "string" && decoded.name.trim()) ||
     (email.split("@")[0] || "User");
 
-  const existing = userStore.get(uid);
   const grantSignupCredits = options?.grantSignupCredits === true;
   const signupIpAddress = options?.request ? getRequestClientIp(options.request) : undefined;
   const deviceFingerprint = options?.request
@@ -137,43 +165,113 @@ export async function getOrCreateServerUser(
         deviceContext: options.deviceContext,
       })
     : undefined;
-  if (existing) {
-    const shouldUpdate =
+
+  const persisted = await readUserFromFirestore(uid);
+  if (persisted) {
+    let next = persisted;
+    let dirty = false;
+    if (persisted.email !== email) {
+      next = { ...persisted, email };
+      dirty = true;
+    }
+    const shouldUpdateMeta =
       (signupIpAddress &&
         signupIpAddress !== "unknown" &&
-        existing.signupIpAddress !== signupIpAddress) ||
-      (deviceFingerprint && existing.deviceFingerprint !== deviceFingerprint);
-    if (shouldUpdate) {
-      const next = {
-        ...existing,
+        next.signupIpAddress !== signupIpAddress) ||
+      (deviceFingerprint && next.deviceFingerprint !== deviceFingerprint);
+    if (shouldUpdateMeta) {
+      next = {
+        ...next,
         ...(signupIpAddress && signupIpAddress !== "unknown" ? { signupIpAddress } : {}),
         ...(deviceFingerprint ? { deviceFingerprint } : {}),
       };
-      userStore.set(uid, next);
-      return next;
+      dirty = true;
     }
-    return existing;
+    if (dirty) await writeUserToFirestore(next);
+    userStore.set(uid, next);
+    return next;
   }
 
-  const alreadyClaimed = hasPriorClaimByAnotherUser({
-    uid,
-    signupIpAddress,
-    deviceFingerprint,
-  });
-  const shouldGrantSignupCredits = grantSignupCredits && !alreadyClaimed;
+  const created = await adminDb.runTransaction(async (transaction) => {
+    const userRef = adminDb.collection(USERS_COLLECTION).doc(uid);
+    const userSnap = await transaction.get(userRef);
+    if (userSnap.exists) {
+      return normalizeServerUser(uid, userSnap.data() as Record<string, unknown>);
+    }
 
-  const next: ServerUser = {
-    uid,
-    email,
-    fullName: fallbackName,
-    credits: shouldGrantSignupCredits ? getInitialCreditsForEmail(email) : 0,
-    freeCreditsClaimed: true,
-    freeCreditsBlocked: alreadyClaimed,
-    ...(signupIpAddress ? { signupIpAddress } : {}),
-    ...(deviceFingerprint ? { deviceFingerprint } : {}),
-  };
-  userStore.set(uid, next);
-  return next;
+    const devRef = deviceFingerprint
+      ? adminDb.collection(DEVICE_FREE_CREDIT_COLLECTION).doc(deviceFingerprint)
+      : null;
+    const devSnap = devRef ? await transaction.get(devRef) : null;
+    const deviceFirstUid = devSnap?.exists
+      ? String((devSnap.data() as { firstUserId?: string }).firstUserId ?? "").trim()
+      : "";
+    const deviceClaimedByOther = Boolean(deviceFirstUid && deviceFirstUid !== uid);
+
+    const ipDocId =
+      signupIpAddress && signupIpAddress !== "unknown" ? signupIpClaimDocId(signupIpAddress) : null;
+    let ipSnapExists = false;
+    let ipFirstUid = "";
+    if (ipDocId) {
+      const ipRef = adminDb.collection(SIGNUP_IP_FREE_CREDIT_COLLECTION).doc(ipDocId);
+      const ipSnap = await transaction.get(ipRef);
+      ipSnapExists = ipSnap.exists;
+      if (ipSnap.exists) {
+        ipFirstUid = String((ipSnap.data() as { firstUserId?: string }).firstUserId ?? "").trim();
+      }
+    }
+    const ipClaimedByOther =
+      grantSignupCredits && Boolean(ipFirstUid && ipFirstUid !== uid);
+
+    const signupBonusBlocked = grantSignupCredits && (deviceClaimedByOther || ipClaimedByOther);
+    const shouldGrantSignupCredits = grantSignupCredits && !signupBonusBlocked;
+    const nextUser: ServerUser = {
+      uid,
+      email,
+      fullName: fallbackName,
+      credits: shouldGrantSignupCredits ? getInitialCreditsForEmail(email) : 0,
+      freeCreditsClaimed: true,
+      freeCreditsBlocked: signupBonusBlocked,
+      ...(signupIpAddress && signupIpAddress !== "unknown" ? { signupIpAddress } : {}),
+      ...(deviceFingerprint ? { deviceFingerprint } : {}),
+    };
+
+    transaction.set(userRef, userToFirestore(nextUser), { merge: false });
+
+    const now = Date.now();
+    if (deviceFingerprint && devRef && !devSnap?.exists) {
+      transaction.set(
+        devRef,
+        {
+          id: deviceFingerprint,
+          deviceFingerprint,
+          firstUserId: uid,
+          freeCreditsGiven: shouldGrantSignupCredits,
+          createdAt: now,
+          updatedAt: now,
+        },
+        { merge: true }
+      );
+    }
+    if (ipDocId && !ipSnapExists) {
+      transaction.set(
+        adminDb.collection(SIGNUP_IP_FREE_CREDIT_COLLECTION).doc(ipDocId),
+        {
+          id: ipDocId,
+          firstUserId: uid,
+          freeCreditsGiven: shouldGrantSignupCredits,
+          createdAt: now,
+          updatedAt: now,
+        },
+        { merge: true }
+      );
+    }
+
+    return nextUser;
+  });
+
+  userStore.set(uid, created);
+  return created;
 }
 
 export async function updateServerUserName(uid: string, fullName: string): Promise<ServerUser> {
@@ -184,7 +282,7 @@ export async function updateServerUserProfile(
   uid: string,
   patch: { fullName?: string; avatarDataUrl?: string | null }
 ): Promise<ServerUser> {
-  const current = userStore.get(uid);
+  const current = await ensureUserInMemory(uid);
   if (!current) throw new Error("User profile not found.");
   const updated: ServerUser = {
     ...current,
@@ -195,25 +293,42 @@ export async function updateServerUserProfile(
         ? { avatarDataUrl: patch.avatarDataUrl }
         : {}),
   };
+  const payload = userToFirestore(updated);
+  if (patch.avatarDataUrl === null) {
+    payload.avatarDataUrl = FieldValue.delete();
+  }
+  await adminDb.collection(USERS_COLLECTION).doc(uid).set(payload, { merge: true });
   userStore.set(uid, updated);
   return updated;
 }
 
 export async function spendServerCredits(uid: string, amount: number): Promise<ServerUser> {
   if (!Number.isFinite(amount) || amount <= 0) throw new Error("Invalid credit amount.");
-  const current = userStore.get(uid);
-  if (!current) throw new Error("User profile not found.");
-  if (current.credits < amount) throw new Error("INSUFFICIENT_CREDITS");
-  const next = { ...current, credits: current.credits - amount };
+  const next = await adminDb.runTransaction(async (transaction) => {
+    const ref = adminDb.collection(USERS_COLLECTION).doc(uid);
+    const snap = await transaction.get(ref);
+    if (!snap.exists) throw new Error("User profile not found.");
+    const current = normalizeServerUser(uid, snap.data() as Record<string, unknown>);
+    if (current.credits < amount) throw new Error("INSUFFICIENT_CREDITS");
+    const updated = { ...current, credits: current.credits - amount };
+    transaction.set(ref, userToFirestore(updated), { merge: true });
+    return updated;
+  });
   userStore.set(uid, next);
   return next;
 }
 
 export async function refundServerCredits(uid: string, amount: number): Promise<ServerUser> {
   if (!Number.isFinite(amount) || amount <= 0) throw new Error("Invalid refund amount.");
-  const current = userStore.get(uid);
-  if (!current) throw new Error("User profile not found.");
-  const next = { ...current, credits: Math.max(0, current.credits + amount) };
+  const next = await adminDb.runTransaction(async (transaction) => {
+    const ref = adminDb.collection(USERS_COLLECTION).doc(uid);
+    const snap = await transaction.get(ref);
+    if (!snap.exists) throw new Error("User profile not found.");
+    const current = normalizeServerUser(uid, snap.data() as Record<string, unknown>);
+    const updated = { ...current, credits: Math.max(0, current.credits + amount) };
+    transaction.set(ref, userToFirestore(updated), { merge: true });
+    return updated;
+  });
   userStore.set(uid, next);
   return next;
 }
@@ -234,11 +349,168 @@ export async function grantPurchasedCredits(
   }
   const normalizedEmail = (input.email || "").trim().toLowerCase();
   const normalizedUid = (input.uid || "").trim();
-  const user =
-    (normalizedUid ? userStore.get(normalizedUid) : undefined) ??
-    [...userStore.values()].find((u) => u.email === normalizedEmail);
+  let user: ServerUser | null = null;
+  if (normalizedUid) {
+    user = (await readUserFromFirestore(normalizedUid)) ?? userStore.get(normalizedUid) ?? null;
+  }
+  if (!user && normalizedEmail) {
+    user = await findUserByEmailInFirestore(normalizedEmail);
+  }
   if (!user) throw new Error("No matching user found for paid order.");
-  const nextUser = { ...user, credits: Math.max(0, user.credits + Math.floor(input.credits)) };
+
+  const add = Math.floor(input.credits);
+  const uid = user.uid;
+  const nextUser = await adminDb.runTransaction(async (transaction) => {
+    const ref = adminDb.collection(USERS_COLLECTION).doc(uid);
+    const snap = await transaction.get(ref);
+    if (!snap.exists) throw new Error("No matching user found for paid order.");
+    const current = normalizeServerUser(uid, snap.data() as Record<string, unknown>);
+    const updated = { ...current, credits: Math.max(0, current.credits + add) };
+    transaction.set(ref, userToFirestore(updated), { merge: true });
+    return updated;
+  });
   userStore.set(nextUser.uid, nextUser);
   return { applied: true, user: nextUser };
+}
+
+export type ApplyLemonSiteforgeOrderResult =
+  | { ok: true; duplicate: true; orderId: string }
+  | {
+      ok: true;
+      duplicate: false;
+      skipped: true;
+      orderId: string;
+      email: string;
+      reason: "no_siteforge_user";
+    }
+  | {
+      ok: true;
+      duplicate: false;
+      skipped: false;
+      orderId: string;
+      email: string;
+      variantId: string;
+      creditsAdded: number;
+      newUser: boolean;
+      creditsAfter: number;
+      uid: string;
+    };
+
+/**
+ * Lemon `order_created` → idempotently add credits on `siteforgeUsers` only.
+ * Resolves the profile by Firebase UID (checkout custom `uid`) when present, else by email.
+ * Creates a minimal `siteforgeUsers/{uid}` row only when UID is known and the doc is missing.
+ */
+export async function applyLemonOrderCreditsToSiteforgeUser(input: {
+  orderId: string;
+  email: string;
+  variantId: string;
+  creditsToAdd: number;
+  firebaseUid?: string | null;
+}): Promise<ApplyLemonSiteforgeOrderResult> {
+  const { orderId, variantId, creditsToAdd } = input;
+  const normalizedEmail = input.email.trim().toLowerCase();
+  const normUid = (input.firebaseUid || "").trim();
+
+  if (!orderId.trim()) throw new Error("Order id is required.");
+  if (!normalizedEmail) throw new Error("Email is required.");
+  if (!Number.isFinite(creditsToAdd) || creditsToAdd <= 0) throw new Error("Invalid credit amount.");
+  const add = Math.floor(creditsToAdd);
+
+  let userRef = normUid
+    ? adminDb.collection(USERS_COLLECTION).doc(normUid)
+    : null;
+
+  if (!userRef) {
+    const existing = await findUserByEmailInFirestore(normalizedEmail);
+    if (!existing) {
+      return {
+        ok: true,
+        duplicate: false,
+        skipped: true,
+        orderId,
+        email: normalizedEmail,
+        reason: "no_siteforge_user",
+      };
+    }
+    userRef = adminDb.collection(USERS_COLLECTION).doc(existing.uid);
+  }
+
+  const processedRef = adminDb.collection(LEMONSQUEEZY_PROCESSED_ORDERS_COLLECTION).doc(orderId);
+
+  const txResult = await adminDb.runTransaction(async (tx) => {
+    const processedSnap = await tx.get(processedRef);
+    if (processedSnap.exists) {
+      return { duplicate: true as const };
+    }
+
+    const userSnap = await tx.get(userRef);
+    const now = FieldValue.serverTimestamp();
+
+    if (!userSnap.exists) {
+      const localName = normalizedEmail.split("@")[0]?.trim() || "User";
+      tx.set(
+        userRef,
+        {
+          uid: userRef.id,
+          email: normalizedEmail,
+          fullName: localName,
+          credits: add,
+          freeCreditsClaimed: true,
+          freeCreditsBlocked: false,
+          updatedAt: now,
+        },
+        { merge: true }
+      );
+    } else {
+      tx.set(
+        userRef,
+        {
+          credits: FieldValue.increment(add),
+          updatedAt: now,
+        },
+        { merge: true }
+      );
+    }
+
+    tx.set(processedRef, {
+      orderId,
+      email: normalizedEmail,
+      variantId,
+      firebaseUid: normUid || null,
+      siteforgeUid: userRef.id,
+      creditsAdded: add,
+      processedAt: now,
+    });
+
+    return {
+      duplicate: false as const,
+      newUser: !userSnap.exists,
+    };
+  });
+
+  if (txResult.duplicate) {
+    return { ok: true, duplicate: true, orderId };
+  }
+
+  const after = await readUserFromFirestore(userRef.id);
+  const rawAfter = after?.credits;
+  const creditsAfter =
+    typeof rawAfter === "number" && Number.isFinite(rawAfter) ? Math.max(0, Math.floor(rawAfter)) : add;
+  if (after) {
+    userStore.set(after.uid, after);
+  }
+
+  return {
+    ok: true,
+    duplicate: false,
+    skipped: false,
+    orderId,
+    email: normalizedEmail,
+    variantId,
+    creditsAdded: add,
+    newUser: txResult.newUser,
+    creditsAfter,
+    uid: userRef.id,
+  };
 }

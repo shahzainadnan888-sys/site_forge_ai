@@ -4,11 +4,9 @@ import { useEffect, useRef, useState } from "react";
 import { useRouter } from "next/navigation";
 import { Tooltip } from "@/app/components/Tooltip";
 import { PublishSuccessModal } from "@/app/components/dashboard/PublishSuccessModal";
-import {
-  emitSiteforgeSessionUpdate,
-  SITEFORGE_SESSION_EVENT,
-} from "@/lib/siteforge-credits";
-import { DEFAULT_SIGNUP_CREDITS, GENERATION_CREDIT_COST } from "@/lib/credit-economy";
+import { syncSessionCreditsFromServer } from "@/lib/client-session-sync";
+import { emitSiteforgeSessionUpdate, SITEFORGE_SESSION_EVENT } from "@/lib/siteforge-credits";
+import { GENERATION_CREDIT_COST } from "@/lib/credit-economy";
 import { isMultiPageWebsiteRequest, MULTI_PAGE_NOT_ALLOWED } from "@/lib/generate-prompt-guards";
 import { freeCreditsBlockedMessageMultiline } from "@/lib/free-credit-blocked-message";
 import { enforceSinglePageAnchors } from "@/lib/sanitize-generated-html";
@@ -68,45 +66,6 @@ function formatElapsed(totalSeconds: number): string {
   const mins = Math.floor(safe / 60);
   const secs = safe % 60;
   return `${String(mins).padStart(2, "0")}:${String(secs).padStart(2, "0")}`;
-}
-
-async function syncCreditsFromServer(): Promise<number | null> {
-  try {
-    const res = await fetch("/api/auth/me", { cache: "no-store" });
-    const data = (await res.json().catch(() => null)) as
-      | {
-          ok: true;
-          user: {
-            uid: string;
-            credits: number;
-            fullName: string;
-            email: string;
-            avatarDataUrl?: string;
-            freeCreditsBlocked?: boolean;
-          };
-        }
-      | { ok: false; error?: string }
-      | null;
-    if (!res.ok || !data || !data.ok) return null;
-    const currentRaw = localStorage.getItem(SESSION_KEY);
-    const current = currentRaw ? (JSON.parse(currentRaw) as Record<string, unknown>) : {};
-    localStorage.setItem(
-      SESSION_KEY,
-      JSON.stringify({
-        ...current,
-        uid: data.user.uid,
-        fullName: data.user.fullName,
-        email: data.user.email,
-        credits: data.user.credits,
-        freeCreditsBlocked: data.user.freeCreditsBlocked === true,
-        ...(data.user.avatarDataUrl ? { avatarDataUrl: data.user.avatarDataUrl } : {}),
-      })
-    );
-    emitSiteforgeSessionUpdate();
-    return data.user.credits;
-  } catch {
-    return null;
-  }
 }
 
 export function BuilderDashboardView() {
@@ -177,7 +136,7 @@ export function BuilderDashboardView() {
 
   useEffect(() => {
     void (async () => {
-      const next = await syncCreditsFromServer();
+      const next = await syncSessionCreditsFromServer();
       if (typeof next === "number") setCredits(next);
     })();
   }, []);
@@ -547,7 +506,7 @@ export function BuilderDashboardView() {
       dispatchParticles();
     } catch (error) {
       void (async () => {
-        const next = await syncCreditsFromServer();
+        const next = await syncSessionCreditsFromServer();
         if (typeof next === "number") setCredits(next);
       })();
       setGenerationError(error instanceof Error ? error.message : "Generation failed.");

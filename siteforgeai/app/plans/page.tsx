@@ -1,4 +1,5 @@
 import type { Metadata } from "next";
+import { DEFAULT_SIGNUP_CREDITS } from "@/lib/credit-economy";
 import { PlansView } from "../components/plans/PlansView";
 import { AmbientPointer } from "../components/AmbientPointer";
 import { FloatingBlobs } from "../components/FloatingBlobs";
@@ -7,7 +8,7 @@ import { Navbar } from "../components/Navbar";
 
 export const metadata: Metadata = {
   title: "Buy Credits — SiteForge AI",
-  description: "Buy AI credits: 10 credits per website generation, 2 credits per edit. New users get 16 credits free.",
+  description: `Buy AI credits: 10 credits per website generation, 2 credits per edit. New users get ${DEFAULT_SIGNUP_CREDITS} credits free.`,
 };
 
 export default function PlansPage() {
