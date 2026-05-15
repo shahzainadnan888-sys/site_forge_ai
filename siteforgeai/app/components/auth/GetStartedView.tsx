@@ -136,8 +136,9 @@ function GetStartedViewInner() {
     setError("");
     try {
       const hint = email.trim().toLowerCase();
+      const origin = typeof window !== "undefined" ? window.location.origin : "";
       await signIn("google", {
-        callbackUrl: "/get-started",
+        callbackUrl: origin ? `${origin}/dashboard` : "/dashboard",
         ...(hint && EMAIL_REGEX.test(hint) ? { login_hint: hint } : {}),
       });
     } catch (e) {

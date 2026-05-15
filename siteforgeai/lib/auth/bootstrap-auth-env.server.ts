@@ -1,6 +1,7 @@
 import fs from "node:fs";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
+import { fixAuthUrlEnvVars } from "@/lib/auth/auth-url";
 
 /** `siteforgeai/` app root (this file: `siteforgeai/lib/auth/…`). */
 const APP_ROOT = path.join(path.dirname(fileURLToPath(import.meta.url)), "..", "..");
@@ -74,3 +75,4 @@ export function hydrateAuthEnvFromLocalFiles(): void {
 }
 
 hydrateAuthEnvFromLocalFiles();
+fixAuthUrlEnvVars();

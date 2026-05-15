@@ -4,9 +4,22 @@ import { pagesFromFirestoreData, resolvePageHtml } from "@/lib/generated-site/re
 import { preparePublishedHtml } from "@/lib/generated-site/sanitize-published-html";
 import { adminDb } from "@/lib/firebase/admin";
 
-type Props = {
-  params: Promise<{ username: string; slug?: string[] }>;
-};
+/** First path segments that must never be treated as published site usernames. */
+const RESERVED_USERNAMES = new Set([
+  "api",
+  "_next",
+  "favicon.ico",
+  "dashboard",
+  "editor",
+  "preview",
+  "account",
+  "get-started",
+  "plans",
+  "services",
+  "about",
+  "contact",
+  "verify-email",
+]);
 
 function normalizeUsername(value: string): string {
   return value
@@ -18,10 +31,9 @@ function normalizeUsername(value: string): string {
     .replace(/^-+|-+$/g, "");
 }
 
-export default async function PublishedSitePage({ params }: Props) {
-  const { username: raw, slug: slugSegments } = await params;
-  const username = normalizeUsername(decodeURIComponent(raw || ""));
-  if (!username) {
+export async function renderPublishedSitePage(rawUsername: string, slugSegments?: string[]) {
+  const username = normalizeUsername(decodeURIComponent(rawUsername || ""));
+  if (!username || RESERVED_USERNAMES.has(username)) {
     notFound();
   }
 

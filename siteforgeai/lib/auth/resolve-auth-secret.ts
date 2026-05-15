@@ -1,3 +1,5 @@
+import { fixAuthUrlEnvVars } from "@/lib/auth/auth-url";
+
 function envHasValue(name: string): boolean {
   return Boolean(process.env[name]?.trim());
 }
@@ -12,6 +14,7 @@ function ensureDevAuthSecret(): void {
   );
 }
 
+fixAuthUrlEnvVars();
 ensureDevAuthSecret();
 
 export function resolveAuthSecret(): string | undefined {

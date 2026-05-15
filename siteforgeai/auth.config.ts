@@ -3,6 +3,7 @@ import type { Provider } from "next-auth/providers";
 import Credentials from "next-auth/providers/credentials";
 import Google from "next-auth/providers/google";
 import { authLogger } from "@/lib/auth/auth-logger";
+import { normalizeAuthBaseUrl } from "@/lib/auth/auth-url";
 import { signInWithEmailPasswordFirebase } from "@/lib/auth/firebase-password-sign-in";
 import { resolveFirestoreProfileUidForNextAuth } from "@/lib/auth/user-store";
 
@@ -71,7 +72,7 @@ export const authConfig = {
      * OAuth post-login redirects: keep relative URLs on this origin; default unknown off-site URLs to dashboard.
      */
     async redirect({ url, baseUrl }) {
-      const base = baseUrl.replace(/\/$/, "");
+      const base = normalizeAuthBaseUrl(baseUrl);
       if (url.startsWith("/")) return `${base}${url}`;
       try {
         const target = new URL(url);
