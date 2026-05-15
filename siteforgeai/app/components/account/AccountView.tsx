@@ -38,15 +38,6 @@ function initialsForSession(s: NonNullable<Session>) {
   return (parts[0]?.slice(0, 2) || "U").toUpperCase();
 }
 
-type BillingTxRow = {
-  id: string;
-  kind: string | null;
-  credits: number | null;
-  orderId: string | null;
-  invoiceId: string | null;
-  createdAt: string | null;
-};
-
 export function AccountView() {
   const router = useRouter();
   const [session, setSession] = useState<Session>(() => readSession());
@@ -55,8 +46,6 @@ export function AccountView() {
   const [avatarStatus, setAvatarStatus] = useState("");
   const [isEditingName, setIsEditingName] = useState(false);
   const [nameDraft, setNameDraft] = useState("");
-  const [billingRows, setBillingRows] = useState<BillingTxRow[]>([]);
-  const [billingErr, setBillingErr] = useState("");
   const fileInputRef = useRef<HTMLInputElement>(null);
 
   const refreshSession = useCallback(() => {
@@ -69,20 +58,6 @@ export function AccountView() {
 
   useEffect(() => {
     void syncSessionCreditsFromServer();
-    void (async () => {
-      try {
-        const res = await fetch("/api/billing/transactions", { cache: "no-store" });
-        const data = (await res.json()) as { ok?: boolean; items?: BillingTxRow[] };
-        if (res.ok && data.ok && Array.isArray(data.items)) {
-          setBillingRows(data.items);
-          setBillingErr("");
-        } else {
-          setBillingErr("Could not load billing history.");
-        }
-      } catch {
-        setBillingErr("Could not load billing history.");
-      }
-    })();
   }, []);
 
   useEffect(() => {
@@ -322,56 +297,6 @@ export function AccountView() {
               </span>
             </p>
           </div>
-        </div>
-
-        <div className="mt-8 rounded-2xl border p-4 sm:p-6" style={{ borderColor: "var(--sf-border)" }}>
-          <h2 className="text-lg font-semibold" style={{ color: "var(--sf-text)" }}>
-            Billing activity
-          </h2>
-          <p className="mt-1 text-sm" style={{ color: "var(--sf-text-muted)" }}>
-            Recent credit purchases and subscription invoices from Lemon Squeezy (server-synced).
-          </p>
-          {billingErr ? (
-            <p className="mt-3 text-sm text-amber-600 dark:text-amber-400">{billingErr}</p>
-          ) : billingRows.length === 0 ? (
-            <p className="mt-3 text-sm" style={{ color: "var(--sf-text-muted)" }}>
-              No billing rows yet. After you buy credits, entries appear here within seconds.
-            </p>
-          ) : (
-            <ul className="mt-4 divide-y text-sm" style={{ borderColor: "var(--sf-border)" }}>
-              {billingRows.map((row) => (
-                <li key={row.id} className="flex flex-wrap items-baseline justify-between gap-2 py-3 first:pt-0">
-                  <div className="min-w-0">
-                    <p className="font-medium" style={{ color: "var(--sf-text)" }}>
-                      {row.kind?.replace(/_/g, " ") ?? "Event"}
-                      {row.orderId ? (
-                        <span className="ml-1 font-mono text-xs opacity-70">#{row.orderId}</span>
-                      ) : null}
-                      {row.invoiceId ? (
-                        <span className="ml-1 font-mono text-xs opacity-70">inv {row.invoiceId}</span>
-                      ) : null}
-                    </p>
-                    <p className="text-xs" style={{ color: "var(--sf-text-muted)" }}>
-                      {row.createdAt ? new Date(row.createdAt).toLocaleString() : "—"}
-                    </p>
-                  </div>
-                  {typeof row.credits === "number" ? (
-                    <span
-                      className="shrink-0 tabular-nums font-semibold"
-                      style={{ color: row.credits < 0 ? "#f87171" : "var(--sf-accent-from)" }}
-                    >
-                      {row.credits > 0 ? "+" : ""}
-                      {row.credits} credits
-                    </span>
-                  ) : (
-                    <span className="text-xs" style={{ color: "var(--sf-text-muted)" }}>
-                      —
-                    </span>
-                  )}
-                </li>
-              ))}
-            </ul>
-          )}
         </div>
 
         <div className="mt-8 flex flex-wrap gap-3">
