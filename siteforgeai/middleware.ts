@@ -2,6 +2,7 @@ import { NextResponse } from "next/server";
 import type { NextRequest } from "next/server";
 import { getToken } from "next-auth/jwt";
 import { isAuthSecureCookieFromRequest } from "@/lib/auth/auth-url";
+import { resolveAuthSecret } from "@/lib/auth/resolve-auth-secret";
 
 const ROOT =
   process.env.NEXT_PUBLIC_ROOT_DOMAIN?.replace(/^https?:\/\//, "").split("/")[0]?.replace(/^www\./, "") ||
@@ -32,7 +33,7 @@ export async function middleware(request: NextRequest) {
 
   const needsAuth = PROTECTED_PREFIXES.some((p) => path === p || path.startsWith(`${p}/`));
   if (needsAuth) {
-    const secret = (process.env.AUTH_SECRET || process.env.NEXTAUTH_SECRET || "").trim() || undefined;
+    const secret = resolveAuthSecret();
     const secure = isAuthSecureCookieFromRequest(request);
     let token = secret
       ? await getToken({

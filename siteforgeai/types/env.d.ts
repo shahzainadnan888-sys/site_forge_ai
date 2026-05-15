@@ -9,6 +9,17 @@ declare namespace NodeJS {
     NEXT_PUBLIC_FIREBASE_MEASUREMENT_ID?: string;
     NEXT_PUBLIC_GOOGLE_API_KEY?: string;
     NEXT_PUBLIC_GOOGLE_CLIENT_ID?: string;
+    /** Auth.js session encryption (required in production). */
+    AUTH_SECRET?: string;
+    NEXTAUTH_SECRET?: string;
+    /** Canonical app origin for Auth.js (e.g. https://siteforgeai.com). */
+    AUTH_URL?: string;
+    NEXTAUTH_URL?: string;
+    /** Google OAuth (server). Both required to enable Google sign-in. */
+    GOOGLE_CLIENT_ID?: string;
+    GOOGLE_CLIENT_SECRET?: string;
+    AUTH_GOOGLE_ID?: string;
+    AUTH_GOOGLE_SECRET?: string;
     FIREBASE_PROJECT_ID?: string;
     FIREBASE_CLIENT_EMAIL?: string;
     FIREBASE_PRIVATE_KEY?: string;

@@ -90,6 +90,15 @@ function GetStartedViewInner() {
   const [busyVerifyOtp, setBusyVerifyOtp] = useState(false);
   const [busyResendOtp, setBusyResendOtp] = useState(false);
   const entryMessage = searchParams.get("message")?.trim() || "";
+  const authCallbackError = searchParams.get("error")?.trim() || "";
+
+  useEffect(() => {
+    if (authCallbackError === "Configuration") {
+      setError(
+        "Sign-in is not fully configured on the server. Use email and password, or set AUTH_SECRET and Google OAuth credentials in the deployment environment."
+      );
+    }
+  }, [authCallbackError]);
 
   useEffect(() => {
     if (signupStep !== "otp" || otpRemainingSec <= 0) return;

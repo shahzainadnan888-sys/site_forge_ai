@@ -1,17 +1,15 @@
-import "./lib/auth/bootstrap-auth-env";
+import "./lib/auth/bootstrap-auth-env.server";
 import NextAuth from "next-auth";
 import { authConfig } from "./auth.config";
 import { getAuthPublicBaseUrl } from "./lib/auth/auth-url";
 import { authLogger } from "./lib/auth/auth-logger";
+import { resolveAuthSecret } from "./lib/auth/resolve-auth-secret";
 
-const secret =
-  process.env.AUTH_SECRET?.trim() ||
-  process.env.NEXTAUTH_SECRET?.trim() ||
-  undefined;
+const secret = resolveAuthSecret();
 
 if (!secret) {
   authLogger.error(
-    "AUTH_SECRET (or NEXTAUTH_SECRET) is missing after .env hydration. Set it in .env.local and restart the dev server."
+    "AUTH_SECRET (or NEXTAUTH_SECRET) is missing. Set it in .env.local (dev) or your host env (production), then restart."
   );
 }
 
@@ -36,7 +34,7 @@ const authDebug = process.env.AUTH_DEBUG === "1" || process.env.NODE_ENV === "de
 
 export const { handlers, signIn, signOut, auth } = NextAuth({
   ...authConfig,
-  ...(secret ? { secret } : {}),
+  secret,
   debug: authDebug,
   logger: {
     debug(message, metadata) {

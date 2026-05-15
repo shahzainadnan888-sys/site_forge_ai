@@ -1,5 +1,5 @@
-import "./lib/auth/bootstrap-auth-env";
 import type { NextAuthConfig } from "next-auth";
+import type { Provider } from "next-auth/providers";
 import Credentials from "next-auth/providers/credentials";
 import Google from "next-auth/providers/google";
 import { authLogger } from "@/lib/auth/auth-logger";
@@ -11,23 +11,28 @@ const googleClientId =
 const googleClientSecret =
   process.env.GOOGLE_CLIENT_SECRET?.trim() || process.env.AUTH_GOOGLE_SECRET?.trim() || "";
 
-if (!googleClientId || !googleClientSecret) {
-  authLogger.error(
-    "Google OAuth is not configured: set GOOGLE_CLIENT_ID and GOOGLE_CLIENT_SECRET (or AUTH_GOOGLE_ID / AUTH_GOOGLE_SECRET) in .env.local. Callback will fail with error=Configuration until both are non-empty."
+const googleOAuthConfigured = Boolean(googleClientId && googleClientSecret);
+
+if (!googleOAuthConfigured) {
+  authLogger.warn(
+    "Google OAuth is disabled: set GOOGLE_CLIENT_ID and GOOGLE_CLIENT_SECRET (or AUTH_GOOGLE_ID / AUTH_GOOGLE_SECRET). Email/password sign-in still works."
   );
 }
 
-export const authConfig = {
-  trustHost: true,
-  session: { strategy: "jwt", maxAge: 60 * 60 * 24 * 5 },
-  pages: { signIn: "/get-started" },
-  providers: [
+const providers: Provider[] = [];
+
+if (googleOAuthConfigured) {
+  providers.push(
     Google({
       clientId: googleClientId,
       clientSecret: googleClientSecret,
       authorization: { params: { prompt: "select_account" } },
-    }),
-    Credentials({
+    })
+  );
+}
+
+providers.push(
+  Credentials({
       id: "credentials",
       name: "Email",
       credentials: {
@@ -47,8 +52,14 @@ export const authConfig = {
           emailVerified: true,
         };
       },
-    }),
-  ],
+    })
+);
+
+export const authConfig = {
+  trustHost: true,
+  session: { strategy: "jwt", maxAge: 60 * 60 * 24 * 5 },
+  pages: { signIn: "/get-started", error: "/get-started" },
+  providers,
   events: {
     async signIn(message) {
       const m = message as { account?: { provider?: string } };
