@@ -11,7 +11,7 @@ import {
 } from "@/lib/security/rate-limit";
 import { logSecurityEvent } from "@/lib/security/security-log";
 import { verifyTurnstileIfConfigured } from "@/lib/security/turnstile";
-import { enforceSinglePageAnchors } from "@/lib/sanitize-generated-html";
+import { sanitizeHtmlForStorage } from "@/lib/sanitize-generated-html";
 
 const OPENAI_API_URL = "https://api.openai.com/v1/chat/completions";
 
@@ -19,6 +19,8 @@ type Body = {
   html?: string;
   instruction?: string;
   turnstileToken?: string;
+  /** When true, preserve /slug links (do not convert nav to #anchors). */
+  multiPage?: boolean;
 };
 
 function normalizeHtml(raw: string): string {
@@ -28,7 +30,6 @@ function normalizeHtml(raw: string): string {
 
   const doctypeStart = lower.indexOf("<!doctype html>");
   const htmlStart = lower.indexOf("<html");
-  const htmlEnd = lower.lastIndexOf("</html>");
 
   if (doctypeStart >= 0) {
     text = text.slice(doctypeStart).trim();
@@ -72,6 +73,7 @@ export async function POST(req: Request) {
     }
     const html = body?.html?.trim();
     const instruction = body?.instruction?.trim();
+    const multiPage = Boolean(body?.multiPage);
 
     if (!html || !instruction) {
       return NextResponse.json({ ok: false, error: "html and instruction are required." }, { status: 400 });
@@ -107,7 +109,7 @@ export async function POST(req: Request) {
             {
               role: "system",
               content:
-                "You are an expert website editor. You will receive an existing full HTML document and an instruction. Apply only the exact changes explicitly requested by the user. Do not add extra enhancements, redesigns, rewrites, content changes, copy updates, spacing changes, color changes, or structural changes unless the user explicitly asks for them. Keep everything else unchanged. Return the UPDATED full HTML only. Do not explain anything. Keep it single-page. In-site navigation must use only #anchor hrefs (no https:// to personal, portfolio, or real domains for main nav, footer, or in-page section links; mailto: and tel: are fine when appropriate). Must start with <!DOCTYPE html> and end with </html>.",
+                "You are an expert website editor. You will receive an existing full HTML document and an instruction. Apply only the exact changes explicitly requested by the user. Do not add extra enhancements, redesigns, rewrites, content changes, copy updates, spacing changes, color changes, or structural changes unless the user explicitly asks for them. Keep everything else unchanged. Return the UPDATED full HTML only. Do not explain anything. Keep it single-page. In-site navigation must use only #anchor hrefs (no https:// to personal, portfolio, or real domains for main nav, footer, or in-page section links; mailto: and tel: are fine when appropriate). Never introduce http(s)://localhost, 127.0.0.1, 0.0.0.0, [::1], ws://localhost, or //localhost in href, src, action, link, CSS url(), or scripts — they break preview. Must start with <!DOCTYPE html> and end with </html>.",
             },
             {
               role: "user",
@@ -138,7 +140,7 @@ export async function POST(req: Request) {
 
       return NextResponse.json({
         ok: true,
-        html: enforceSinglePageAnchors(updated),
+        html: sanitizeHtmlForStorage(updated, multiPage),
         remainingCredits: chargedUser.credits,
       });
     } catch (innerError) {

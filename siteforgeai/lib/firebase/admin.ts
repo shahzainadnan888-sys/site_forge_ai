@@ -1,3 +1,4 @@
+import "@/lib/auth/bootstrap-auth-env";
 import { cert, getApps, initializeApp } from "firebase-admin/app";
 import { getAuth } from "firebase-admin/auth";
 import { getFirestore } from "firebase-admin/firestore";
@@ -14,15 +15,27 @@ function getPrivateKey(): string {
   return requiredEnv("FIREBASE_PRIVATE_KEY").replace(/\\n/g, "\n");
 }
 
+const firebaseProjectId = requiredEnv("FIREBASE_PROJECT_ID");
+const firebaseClientEmail = requiredEnv("FIREBASE_CLIENT_EMAIL");
+const firebasePrivateKey = getPrivateKey();
+
 const app =
   getApps()[0] ??
   initializeApp({
     credential: cert({
-      projectId: requiredEnv("FIREBASE_PROJECT_ID"),
-      clientEmail: requiredEnv("FIREBASE_CLIENT_EMAIL"),
-      privateKey: getPrivateKey(),
+      projectId: firebaseProjectId,
+      clientEmail: firebaseClientEmail,
+      privateKey: firebasePrivateKey,
     }),
   });
 
-export const adminAuth = getAuth(app);
+const publicProjectId = process.env.NEXT_PUBLIC_FIREBASE_PROJECT_ID?.trim();
+if (publicProjectId && publicProjectId !== firebaseProjectId && process.env.NODE_ENV === "development") {
+  console.warn(
+    `[SiteForge] FIREBASE_PROJECT_ID (${firebaseProjectId}) does not match NEXT_PUBLIC_FIREBASE_PROJECT_ID (${publicProjectId}). The Admin SDK uses FIREBASE_PROJECT_ID; a mismatch often causes PERMISSION_DENIED or wrong data.`
+  );
+}
+
+/** Firestore + Firebase Auth (email/password sign-up). */
 export const adminDb = getFirestore(app);
+export const adminAuth = getAuth(app);

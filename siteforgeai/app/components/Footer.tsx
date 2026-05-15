@@ -5,11 +5,9 @@ import { useEffect, useRef, useState } from "react";
 
 const productLinks = [
   { label: "Home", href: "/" },
-  { label: "Get started", href: "/get-started" },
   { label: "Dashboard", href: "/dashboard" },
   { label: "Plans", href: "/plans" },
   { label: "Services", href: "/services" },
-  { label: "Account", href: "/account" },
 ] as const;
 
 const companyLinks = [

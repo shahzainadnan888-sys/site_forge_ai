@@ -10,6 +10,7 @@ const LEGACY_PROMPT_KEY = "siteforge-generated-prompt";
 
 const HTML_PREFIX = "siteforge-generated-html::";
 const PROMPT_PREFIX = "siteforge-generated-prompt::";
+const PAGES_PREFIX = "siteforge-generated-pages::";
 
 /**
  * Read Firebase `uid` from the client session object (must be set by /api/auth/me and sign-in).
@@ -28,9 +29,36 @@ export function readSessionUidFromLocalStorage(): string | null {
 
 export function getProjectLocalStorageKeys(uid: string | null | undefined) {
   if (uid) {
-    return { htmlKey: `${HTML_PREFIX}${uid}`, promptKey: `${PROMPT_PREFIX}${uid}` };
+    return {
+      htmlKey: `${HTML_PREFIX}${uid}`,
+      promptKey: `${PROMPT_PREFIX}${uid}`,
+      pagesKey: `${PAGES_PREFIX}${uid}`,
+    };
   }
-  return { htmlKey: LEGACY_HTML_KEY, promptKey: LEGACY_PROMPT_KEY };
+  return { htmlKey: LEGACY_HTML_KEY, promptKey: LEGACY_PROMPT_KEY, pagesKey: "siteforge-generated-pages" };
+}
+
+export function readPagesFromLocalStorage(uid: string | null | undefined): Record<string, string> | null {
+  if (typeof window === "undefined") return null;
+  try {
+    const { pagesKey } = getProjectLocalStorageKeys(uid);
+    const raw = localStorage.getItem(pagesKey);
+    if (!raw) return null;
+    const parsed = JSON.parse(raw) as Record<string, string>;
+    return parsed && typeof parsed === "object" ? parsed : null;
+  } catch {
+    return null;
+  }
+}
+
+export function writePagesToLocalStorage(uid: string | null | undefined, pages: Record<string, string>) {
+  if (typeof window === "undefined") return;
+  try {
+    const { pagesKey } = getProjectLocalStorageKeys(uid);
+    localStorage.setItem(pagesKey, JSON.stringify(pages));
+  } catch {
+    // ignore
+  }
 }
 
 /**

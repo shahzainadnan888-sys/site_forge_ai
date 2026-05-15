@@ -50,7 +50,7 @@ export function HowItWorks() {
         {steps.map((s, i) => (
           <li
             key={s.title}
-            className="sf-card-hover relative rounded-2xl border p-6 sm:p-8"
+            className="sf-elevate sf-card-hover relative rounded-2xl border p-6 sm:p-8"
             style={{
               background: "var(--sf-card)",
               borderColor: "var(--sf-border)",

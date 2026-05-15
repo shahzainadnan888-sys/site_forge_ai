@@ -46,10 +46,23 @@ export function PlansView() {
     };
   }, []);
 
-  /** Pull latest credit balance from Firestore when visiting Plans (e.g. after env / server updates). */
+  /** After Lemon checkout, users can land on `/plans?billing=success` — poll Firestore until credits update. */
   useEffect(() => {
-    if (!isSignedIn) return;
+    if (typeof window === "undefined" || !isSignedIn) return;
+    const sp = new URLSearchParams(window.location.search);
+    const billingSync = sp.get("billing") === "success" || sp.get("billing") === "sync";
+    if (!billingSync) return;
+
+    let ticks = 0;
+    const id = window.setInterval(() => {
+      ticks += 1;
+      void syncSessionCreditsFromServer();
+      if (ticks >= 45) window.clearInterval(id);
+    }, 3000);
+
     void syncSessionCreditsFromServer();
+
+    return () => window.clearInterval(id);
   }, [isSignedIn]);
 
   const handleBuyCredits = () => {
@@ -155,6 +168,10 @@ export function PlansView() {
 
           <p className="mt-4 text-center text-xs sm:text-sm" style={{ color: "var(--sf-text-muted)" }}>
             New users get {DEFAULT_SIGNUP_CREDITS} credits free
+          </p>
+          <p className="mt-3 text-center text-xs" style={{ color: "var(--sf-text-muted)" }}>
+            After paying, use Lemon&apos;s confirmation button URL{" "}
+            <span className="font-mono text-[11px]">/plans?billing=success</span> so your balance refreshes automatically.
           </p>
         </div>
       </section>

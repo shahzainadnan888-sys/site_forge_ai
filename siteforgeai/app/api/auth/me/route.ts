@@ -1,14 +1,59 @@
-import { NextResponse } from "next/server";
-import { requireCurrentServerUser } from "@/lib/auth/current-user";
+import { auth } from "@/auth";
+import { authLogger } from "@/lib/auth/auth-logger";
+import {
+  requireCurrentServerUserFromSession,
+  resolveCurrentServerUserFromSession,
+} from "@/lib/auth/current-user";
 import { updateServerUserProfile } from "@/lib/auth/user-store";
 import { assertSameOrigin, CsrfError } from "@/lib/security/csrf";
 import { enforceRateLimit, RateLimitError } from "@/lib/security/rate-limit";
+import { NextResponse, type NextRequest } from "next/server";
 
 export const runtime = "nodejs";
+export const dynamic = "force-dynamic";
 
-export async function GET(req: Request) {
+type NextAuthAugmentedRequest = NextRequest & { auth: import("next-auth").Session | null };
+
+function logMeRequest(req: NextRequest, label: string, session: import("next-auth").Session | null) {
+  const cookieHeader = req.headers.get("cookie") ?? "";
+  const hasSessionCookie =
+    cookieHeader.includes("authjs.session-token") ||
+    cookieHeader.includes("__Secure-authjs.session-token") ||
+    cookieHeader.includes("next-auth.session-token") ||
+    cookieHeader.includes("__Secure-next-auth.session-token");
+  authLogger.debug(`/api/auth/me ${label}`, {
+    hasCookieHeader: cookieHeader.length > 0,
+    hasLikelySessionCookie: hasSessionCookie,
+    sessionUserEmail: session?.user?.email ?? null,
+    firestoreUid: session && "firestoreUid" in session ? (session as { firestoreUid?: string }).firestoreUid : null,
+  });
+}
+
+export const GET = auth(async (req: NextRequest) => {
+  const session = (req as NextAuthAugmentedRequest).auth;
+  logMeRequest(req, "GET", session);
+
   try {
-    const user = await requireCurrentServerUser();
+    const { user, syncError } = await resolveCurrentServerUserFromSession(session);
+    if (!user) {
+      authLogger.warn("/api/auth/me GET: no SiteForge user (session missing, uid missing, or Firestore error — see prior logs)");
+      const debugAuth = process.env.AUTH_DEBUG === "1" || process.env.NODE_ENV === "development";
+      const body: {
+        ok: false;
+        error: string;
+        syncError?: string;
+        firebaseProjectId?: string;
+        fixHint?: string;
+      } = { ok: false, error: "Unauthorized" };
+      if (debugAuth && syncError === "firestore_permission_denied") {
+        body.syncError = syncError;
+        const pid = process.env.FIREBASE_PROJECT_ID?.trim();
+        if (pid) body.firebaseProjectId = pid;
+        body.fixHint =
+          "In Google Cloud Console → IAM for this Firebase/GCP project, grant the service account in FIREBASE_CLIENT_EMAIL the role roles/datastore.user (Cloud Datastore User). Use a private key downloaded from the same project (Firebase console → Project settings → Service accounts).";
+      }
+      return NextResponse.json(body, { status: 401 });
+    }
     enforceRateLimit(req, "auth-me-get", { limit: 120, windowMs: 60_000, userId: user.uid });
     return NextResponse.json({ ok: true, user });
   } catch (error) {
@@ -20,12 +65,15 @@ export async function GET(req: Request) {
     }
     return NextResponse.json({ ok: false, error: "Unauthorized" }, { status: 401 });
   }
-}
+});
 
-export async function PATCH(req: Request) {
+export const PATCH = auth(async (req: NextRequest) => {
+  const session = (req as NextAuthAugmentedRequest).auth;
+  logMeRequest(req, "PATCH", session);
+
   try {
     assertSameOrigin(req);
-    const current = await requireCurrentServerUser();
+    const current = await requireCurrentServerUserFromSession(session);
     enforceRateLimit(req, "auth-me-patch", { limit: 30, windowMs: 60_000, userId: current.uid });
     const body = (await req.json()) as { fullName?: string; avatarDataUrl?: string | null };
     const fullName = body?.fullName?.trim();
@@ -59,4 +107,4 @@ export async function PATCH(req: Request) {
     }
     return NextResponse.json({ ok: false, error: "Unable to update profile." }, { status: 500 });
   }
-}
+});

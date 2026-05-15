@@ -1,7 +1,11 @@
 import { NextResponse } from "next/server";
 import { requireVerifiedServerUser } from "@/lib/auth/current-user";
 import { refundServerCredits, spendServerCredits } from "@/lib/auth/user-store";
-import { isMultiPageWebsiteRequest, MULTI_PAGE_NOT_ALLOWED } from "@/lib/generate-prompt-guards";
+import { buildGenerationUserMessage } from "@/lib/generated-site/build-user-message";
+import { wantsSinglePageOnly } from "@/lib/generate-prompt-guards";
+import { finalizeGeneratedSite } from "@/lib/generated-site/finalize-site";
+import { PAGE_DELIMITER_RE, SYSTEM_PROMPT_MULTI, SYSTEM_PROMPT_SINGLE } from "@/lib/generated-site/prompts";
+import { splitGeneratedPages } from "@/lib/generated-site/split-pages";
 import { assertSameOrigin, CsrfError } from "@/lib/security/csrf";
 import { assertPromptLength } from "@/lib/security/request-limits";
 import {
@@ -12,14 +16,9 @@ import {
 import { logSecurityEvent } from "@/lib/security/security-log";
 import { verifyTurnstileIfConfigured } from "@/lib/security/turnstile";
 import { GENERATION_CREDIT_COST } from "@/lib/credit-economy";
-import { enforceSinglePageAnchors } from "@/lib/sanitize-generated-html";
-
 const OPENAI_API_URL = "https://api.openai.com/v1/chat/completions";
 const API_SAFETY_REPAIR_NOTE =
   "Your previous draft violated API safety requirements. Regenerate from scratch with no external APIs and no unknown endpoints. For portfolio/landing pages, keep it fully static. If a contact form is included, use only fetch('/api/contact').";
-
-const SYSTEM_PROMPT_SINGLE =
-  "You are a world-class frontend developer and designer. This tool outputs exactly ONE self-contained HTML file (a single-page application with in-page sections and #anchors only). You MUST NOT design or reference multiple top-level pages, multiple HTML files, or app routing. Generate a COMPLETE, production-ready SINGLE-PAGE website. CRITICAL — NAV (SPA only): - Give each main content section a matching id: id=\"home\" (or hero), id=\"features\", id=\"about\", id=\"pricing\", id=\"contact\" (add id=\"projects\" or id=\"services\" if used). - In the <nav> bar, use ONLY in-page hash links, e.g. <a href=\"#features\"> not href=\"/features\" and not a full site URL. - Do NOT use any real personal website, portfolio, or brand domain in href (no https:// to the user's or anyone's real site for in-app navigation; use only #section anchors and mailto: or tel: where a real address is actually needed). - NEVER use a <base> tag. - NEVER use target=\"_parent\" or target=\"_top\" on in-site links. STRICT RULES: - Output ONLY HTML code - No explanations - No markdown - No section labels like 'Hero Section' - Use SINGLE PAGE anchors only (href like #home, #features, #pricing) - NEVER use route links like /about, /pricing, /contact - NEVER generate admin/editor UI (no top control bars, no 'Theme/Colors/Fonts/Preview/Publish' panels, no builder controls) API SAFETY RULES (MANDATORY): - Generated websites must be standalone and work immediately after generation. - For portfolio and landing pages, generate fully static HTML/CSS/JS with NO backend calls. - NEVER call external APIs or external endpoints in JavaScript (no fetch(\"http://...\"), fetch(\"https://...\"), axios(\"http://...\"), axios(\"https://...\"), XMLHttpRequest to absolute URLs). - NEVER use unknown, placeholder, fake, or outdated endpoints (examples forbidden: /api/old-route, /api/v1/* unless explicitly requested, /api/submit, /api/form, /api/send, /api/lead). - If and only if a contact form needs submission, use exactly fetch('/api/contact') and no other API endpoint. - Do not include third-party API SDK calls, API keys, or remote data dependencies. THEME AND DEFAULTS: - If the user does not specify colors or a theme, use a clean, professional default: restrained palette (e.g. deep neutral background or soft off-white) with one accent color, strong contrast, and NO muddy low-contrast text. - If the user describes a style in their prompt, match it while keeping readability first. - If the user gives a detailed prompt, prioritize that detail and produce the highest-quality, context-aware output possible while preserving clean structure. TYPOGRAPHY AND READABILITY: - All body text and headings must be clearly visible: use font-weight 500-700 for important text, semibold or bold for headings, sufficient line-height (1.4-1.6), and contrast ratios that pass WCAG-style readability (no light gray on light backgrounds). - Establish clear visual hierarchy: large bold hero headline, subheadings, generous whitespace, aligned grids. LAYOUT: - Everything must be properly arranged, aligned, and balanced; use a consistent max-width content container, consistent section padding, and a clean column/grid system. - Use Flexbox/Grid; avoid clutter. TECH REQUIREMENTS: - Full HTML5 structure - CSS inside <style> - Use modern design principles - Use gradients, shadows, and spacing thoughtfully (not only heavy gradients) - Use Flexbox/Grid DESIGN: - If no theme is given, make it look like a premium, minimal SaaS or portfolio site: attractive, professional, and calm. - If a theme is given, follow it. - Add smooth animations (hover, transitions, subtle motion) - Buttons with clear hover/focus states SECTIONS TO ALWAYS INCLUDE: - Navbar - Hero (strong bold headline + CTA) - Features (cards with icons) - About or How it works - Pricing (3 cards) - Footer OUTPUT FORMAT: - Must start with <!DOCTYPE html> - Must end with </html> - Must be directly usable in browser FAIL IF: - Output is plain text - Output is not styled - Text is too faint, too small, or hard to read - Output has no animations - Output includes forbidden API/network calls";
 
 function normalizeModelHtml(raw: string): string {
   let text = (raw || "").trim();
@@ -64,6 +63,21 @@ function looksLikeCompleteWebsite(html: string): boolean {
   if (sections >= 1 && footerLike && html.length >= 2000) return true;
   if (html.length >= 2800 && lower.includes("<head") && hasNav) return true;
   return false;
+}
+
+function looksLikeValidGenerationOutput(html: string, singlePage: boolean): boolean {
+  if (!html || !/^<!doctype html>/i.test(html)) return false;
+  if (singlePage) {
+    return looksLikeCompleteWebsite(html);
+  }
+  const hasMarkers = PAGE_DELIMITER_RE.test(html);
+  PAGE_DELIMITER_RE.lastIndex = 0;
+  if (hasMarkers) {
+    const pages = splitGeneratedPages(html);
+    const complete = Object.values(pages).filter((p) => p.includes("</html>") && looksLikeCompleteWebsite(p));
+    return complete.length >= 2;
+  }
+  return looksLikeCompleteWebsite(html);
 }
 
 function hasForbiddenNetworkCalls(html: string): boolean {
@@ -192,9 +206,9 @@ export async function POST(req: Request) {
       logSecurityEvent(req, "input_rejected", { reason: "prompt_length" });
       return NextResponse.json({ ok: false, error: plen.error }, { status: 400 });
     }
-    if (isMultiPageWebsiteRequest(prompt)) {
-      return NextResponse.json({ ok: false, error: MULTI_PAGE_NOT_ALLOWED }, { status: 400 });
-    }
+    const singlePage = wantsSinglePageOnly(prompt);
+    const systemPrompt = singlePage ? SYSTEM_PROMPT_SINGLE : SYSTEM_PROMPT_MULTI;
+    const userMessage = buildGenerationUserMessage(prompt);
     const chargedUser = await spendServerCredits(currentUser.uid, GENERATION_CREDIT_COST);
     const upstream = await fetch(OPENAI_API_URL, {
       method: "POST",
@@ -205,19 +219,22 @@ export async function POST(req: Request) {
       body: JSON.stringify({
         model: "gpt-4.1",
         temperature: 0.7,
-        max_tokens: 6000,
+        max_tokens: singlePage ? 8000 : 16384,
         stream: true,
         messages: [
-          { role: "system", content: SYSTEM_PROMPT_SINGLE },
+          { role: "system", content: systemPrompt },
           referenceImageDataUrl
             ? {
                 role: "user",
                 content: [
-                  { type: "text", text: `${prompt}\n\nUse the attached image as a strong design reference.` },
+                  {
+                    type: "text",
+                    text: `${userMessage}\n\nUse the attached image as a strong design reference.`,
+                  },
                   { type: "image_url", image_url: { url: referenceImageDataUrl } },
                 ],
               }
-            : { role: "user", content: prompt },
+            : { role: "user", content: userMessage },
         ],
       }),
       cache: "no-store",
@@ -294,7 +311,7 @@ export async function POST(req: Request) {
         }
 
         const normalized = normalizeModelHtml(output);
-        if (!/^<!doctype html>/i.test(normalized) || !/<\/html>\s*$/i.test(normalized) || !looksLikeCompleteWebsite(normalized)) {
+        if (!/<\/html>\s*$/i.test(normalized) || !looksLikeValidGenerationOutput(normalized, singlePage)) {
           await refundServerCredits(currentUser.uid, GENERATION_CREDIT_COST);
           await writer.write(
             encoder.encode(
@@ -318,7 +335,7 @@ export async function POST(req: Request) {
           if (
             !/^<!doctype html>/i.test(finalOutput) ||
             !/<\/html>\s*$/i.test(finalOutput) ||
-            !looksLikeCompleteWebsite(finalOutput) ||
+            !looksLikeValidGenerationOutput(finalOutput, singlePage) ||
             hasForbiddenNetworkCalls(finalOutput) ||
             hasInvalidApiRouteUsage(finalOutput)
           ) {
@@ -335,14 +352,18 @@ export async function POST(req: Request) {
           }
         }
 
+        const rawPages = splitGeneratedPages(finalOutput);
+        const site = finalizeGeneratedSite(rawPages, singlePage, { userPrompt: prompt });
+
         await writer.write(encoder.encode(ndjsonLine({ type: "progress", progress: 100 })));
         await writer.write(
           encoder.encode(
             ndjsonLine({
               type: "result",
               ok: true,
-              appType: "single",
-              html: enforceSinglePageAnchors(finalOutput),
+              appType: site.appType,
+              html: site.html,
+              pages: site.pages,
               remainingCredits: chargedUser.credits,
             })
           )

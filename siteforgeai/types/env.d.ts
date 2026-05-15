@@ -13,6 +13,8 @@ declare namespace NodeJS {
     FIREBASE_CLIENT_EMAIL?: string;
     FIREBASE_PRIVATE_KEY?: string;
     RESEND_API_KEY?: string;
+    /** From address for Resend (e.g. SiteForge <mail@yourdomain.com>). Defaults to Resend onboarding sender when unset. */
+    RESEND_FROM?: string;
     /** Canonical app URL (https://siteforgeai.com) for publish links when request host is wrong (e.g. some proxies). */
     NEXT_PUBLIC_APP_URL?: string;
     NEXT_PUBLIC_ROOT_URL?: string;
@@ -20,6 +22,8 @@ declare namespace NodeJS {
     NEXT_PUBLIC_ROOT_DOMAIN?: string;
     FIREBASE_STORAGE_BUCKET?: string;
     LEMONSQUEEZY_WEBHOOK_SECRET?: string;
+    /** Optional: protect `/api/admin/billing-health` (header `x-siteforge-admin-secret` or `?secret=`). */
+    SITEFORGE_ADMIN_SECRET?: string;
     /** Server-only Lemon API key (Settings → API). Used to create real checkout URLs. */
     LEMONSQUEEZY_API_KEY?: string;
     /** Numeric store id from Lemon (Settings → Stores). May duplicate NEXT_PUBLIC for client-side gating. */

@@ -3,6 +3,7 @@
 import { useEffect, useMemo, useState } from "react";
 import Link from "next/link";
 import { usePathname } from "next/navigation";
+import { useSession } from "next-auth/react";
 import { SITE_LOGO_PATH } from "@/lib/brand";
 import { syncSessionCreditsFromServer } from "@/lib/client-session-sync";
 import { SITEFORGE_SESSION_EVENT } from "@/lib/siteforge-credits";
@@ -157,9 +158,31 @@ function LogoIcon() {
 
 export function Navbar() {
   const pathname = usePathname();
+  const { data: nextAuthSession, status: nextAuthStatus } = useSession();
   const [mobileOpen, setMobileOpen] = useState(false);
   const [credits, setCredits] = useState(0);
-  const [session, setSession] = useState<Session>(null);
+  const [localSession, setLocalSession] = useState<Session>(null);
+
+  /** Profile / credits only after Firestore-backed `/api/auth/me` wrote `siteforge-session` (same as pre-auth-refactor UX). */
+  const displaySession = useMemo((): Session => {
+    if (nextAuthStatus === "unauthenticated") return null;
+    if (!localSession?.uid?.trim()) return null;
+    if (nextAuthStatus === "authenticated") {
+      const u = nextAuthSession?.user;
+      if (u?.email) {
+        const naEmail = u.email.trim().toLowerCase();
+        const le = localSession.email?.trim().toLowerCase();
+        if (le && le !== naEmail) return null;
+      }
+    }
+    return localSession;
+  }, [localSession, nextAuthStatus, nextAuthSession]);
+
+  const displayCredits = displaySession
+    ? typeof displaySession.credits === "number"
+      ? displaySession.credits
+      : credits
+    : 0;
 
   useEffect(() => {
     const readSession = () => {
@@ -167,15 +190,15 @@ export function Navbar() {
         const raw = localStorage.getItem(SESSION_KEY);
         if (!raw) {
           setCredits(0);
-          setSession(null);
+          setLocalSession(null);
           return;
         }
         const parsed = JSON.parse(raw) as Session;
-        setSession(parsed ?? null);
+        setLocalSession(parsed ?? null);
         setCredits(typeof parsed?.credits === "number" ? parsed.credits : 0);
       } catch {
         setCredits(0);
-        setSession(null);
+        setLocalSession(null);
       }
     };
 
@@ -186,17 +209,35 @@ export function Navbar() {
         if (!raw) return;
         const u = JSON.parse(raw) as { uid?: string };
         if (!u?.uid?.trim()) return;
-        const next = await syncSessionCreditsFromServer();
-        if (typeof next === "number") setCredits(next);
+        await syncSessionCreditsFromServer();
+        readSession();
       } catch {
         // ignore
       }
     })();
 
+    const onVisibility = () => {
+      if (document.visibilityState !== "visible") return;
+      void (async () => {
+        try {
+          const raw = localStorage.getItem(SESSION_KEY);
+          if (!raw) return;
+          const u = JSON.parse(raw) as { uid?: string };
+          if (!u?.uid?.trim()) return;
+          await syncSessionCreditsFromServer();
+          readSession();
+        } catch {
+          // ignore
+        }
+      })();
+    };
+    document.addEventListener("visibilitychange", onVisibility);
+
     window.addEventListener("storage", readSession);
     window.addEventListener("focus", readSession);
     window.addEventListener(SITEFORGE_SESSION_EVENT, readSession);
     return () => {
+      document.removeEventListener("visibilitychange", onVisibility);
       window.removeEventListener("storage", readSession);
       window.removeEventListener("focus", readSession);
       window.removeEventListener(SITEFORGE_SESSION_EVENT, readSession);
@@ -222,15 +263,15 @@ export function Navbar() {
   }, [mobileOpen]);
 
   const avatarLabel = useMemo(() => {
-    const base = session?.fullName?.trim() || session?.email?.trim() || "U";
+    const base = displaySession?.fullName?.trim() || displaySession?.email?.trim() || "U";
     const parts = base.split(" ").filter(Boolean);
     if (parts.length >= 2) return `${parts[0][0] ?? ""}${parts[1][0] ?? ""}`.toUpperCase();
     return (parts[0]?.slice(0, 2) || "U").toUpperCase();
-  }, [session]);
+  }, [displaySession]);
 
   return (
     <header
-      className="sticky top-0 z-50 border-b transition-colors"
+      className="sf-site-header sticky top-0 z-50 border-b transition-colors"
       style={{
         borderColor: "var(--sf-border)",
         background: "var(--sf-nav-glass)",
@@ -336,13 +377,17 @@ export function Navbar() {
               color: "var(--sf-text)",
             }}
           >
-            <Tooltip side="bottom" label="Your AI credit balance. Generating a site uses 10 credits; each AI edit uses 2 credits.">
+            <Tooltip
+              side="bottom"
+              label="Your AI credit balance (updates after checkout when you return to this tab). Generating a site uses 10 credits; each AI edit uses 2 credits."
+            >
               <span
                 className="inline-flex min-w-0 cursor-default items-center gap-1 pr-2 text-xs font-semibold sm:gap-1.5 sm:pr-3 sm:text-sm"
                 style={{ color: "var(--sf-accent-from)" }}
               >
                 <CoinIcon />
-                {credits}
+                <span className="tabular-nums">{displayCredits}</span>
+                <span className="hidden font-medium normal-case opacity-80 sm:inline">credits</span>
               </span>
             </Tooltip>
             <Tooltip side="bottom" label="View plan tiers, pricing, and our contact page.">
@@ -359,7 +404,7 @@ export function Navbar() {
               </Link>
             </Tooltip>
           </div>
-          {session ? (
+          {displaySession ? (
             <Tooltip label="Open your profile and account details">
               <Link
                 href="/account"
@@ -367,16 +412,16 @@ export function Navbar() {
                 style={{
                   borderColor: "var(--sf-border)",
                   color: "white",
-                  background: session.avatarDataUrl
+                  background: displaySession.avatarDataUrl
                     ? "var(--sf-card)"
                     : `linear-gradient(135deg, var(--sf-accent-from), var(--sf-accent-to))`,
-                  boxShadow: session.avatarDataUrl ? "none" : "0 0 18px var(--sf-glow)",
+                  boxShadow: displaySession.avatarDataUrl ? "none" : "0 0 18px var(--sf-glow)",
                 }}
                 aria-label="Open account page"
               >
-                {session.avatarDataUrl ? (
+                {displaySession.avatarDataUrl ? (
                   <img
-                    src={session.avatarDataUrl}
+                    src={displaySession.avatarDataUrl}
                     alt=""
                     className="h-full w-full object-cover"
                     width={40}

@@ -41,23 +41,28 @@ body {
 }
 
 :root {
-  --sf-bg: #f7f8fc;
+  --sf-bg: #f0f3fa;
   --sf-card: #ffffff;
-  --sf-text: #111827;
-  --sf-text-muted: #4b5563;
-  --sf-border: rgba(17, 24, 39, 0.08);
+  --sf-text: #0f172a;
+  --sf-text-muted: #334155;
+  --sf-border: rgba(15, 23, 42, 0.11);
   --sf-accent-from: #2563eb;
   --sf-accent-to: #60a5fa;
   --sf-glow: rgba(37, 99, 235, 0.45);
   --sf-blob-1: rgba(37, 99, 235, 0.35);
   --sf-blob-2: rgba(96, 165, 250, 0.3);
   --sf-blob-3: rgba(147, 197, 253, 0.25);
-  --sf-nav-glass: rgba(255, 255, 255, 0.72);
+  --sf-nav-glass: rgba(255, 255, 255, 0.78);
   --font-sans: var(--font-geist-sans);
   --font-mono: var(--font-geist-mono);
   --sf-scrollbar-track: #e2e8f0;
   --sf-scrollbar-thumb: #94a3b8;
   --sf-scrollbar-thumb-hover: #64748b;
+  /* Soft accent “glow” edge so panels don’t disappear on light gray backgrounds */
+  --sf-panel-shadow:
+    0 0 0 1px color-mix(in srgb, var(--sf-accent-from) 20%, rgba(15, 23, 42, 0.07)),
+    0 1px 3px rgba(15, 23, 42, 0.05),
+    0 10px 36px rgba(37, 99, 235, 0.09);
 }
 
 html.dark {
@@ -76,6 +81,7 @@ html.dark {
   --sf-scrollbar-track: #1a2235;
   --sf-scrollbar-thumb: #3d4f6b;
   --sf-scrollbar-thumb-hover: #5b6f8f;
+  --sf-panel-shadow: 0 0 0 1px rgba(229, 231, 235, 0.06), 0 8px 32px rgba(0, 0, 0, 0.22);
 }
 
 @theme inline {
@@ -180,7 +186,7 @@ html.dark {
 
 .sf-card-hover:hover {
   transform: translateY(-4px);
-  box-shadow: 0 0 32px var(--sf-glow), 0 20px 40px rgba(0, 0, 0, 0.12);
+  box-shadow: var(--sf-panel-shadow), 0 0 32px var(--sf-glow), 0 20px 40px rgba(0, 0, 0, 0.12);
 }
 
 @keyframes scroll-x {
@@ -220,10 +226,7 @@ html.dark {
   -webkit-backdrop-filter: blur(16px);
   backdrop-filter: blur(16px);
   border: 1px solid var(--sf-border);
-  box-shadow: 0 8px 32px rgba(0, 0, 0, 0.05);
-}
-html.dark .sf-glass {
-  box-shadow: 0 8px 32px rgba(0, 0, 0, 0.25);
+  box-shadow: var(--sf-panel-shadow);
 }
 
 .sf-fade-up {
@@ -392,16 +395,13 @@ html.dark .sf-service-glow:hover {
   backdrop-filter: blur(16px);
   background: color-mix(in srgb, var(--sf-card) 72%, transparent);
   border: 1px solid var(--sf-border);
-  box-shadow: 0 8px 32px rgba(0, 0, 0, 0.06);
+  box-shadow: var(--sf-panel-shadow);
   transition:
     transform 0.4s cubic-bezier(0.22, 1, 0.36, 1),
     box-shadow 0.4s ease,
     border-color 0.4s ease;
   transform: scale(1) translateY(0);
   z-index: 0;
-}
-html.dark .sf-plan-card {
-  box-shadow: 0 8px 32px rgba(0, 0, 0, 0.2);
 }
 .sf-plan-card:hover {
   z-index: 2;
@@ -442,10 +442,7 @@ html.dark .sf-plan-card--pro {
   background: color-mix(in srgb, var(--sf-card) 74%, transparent);
   -webkit-backdrop-filter: blur(16px);
   backdrop-filter: blur(16px);
-  box-shadow: 0 10px 36px rgba(0, 0, 0, 0.07);
-}
-html.dark .sf-contact-shell {
-  box-shadow: 0 10px 36px rgba(0, 0, 0, 0.25);
+  box-shadow: var(--sf-panel-shadow);
 }
 .sf-field {
   position: relative;
@@ -514,6 +511,7 @@ html.dark .sf-contact-shell {
   background: color-mix(in srgb, var(--sf-card) 75%, transparent);
   -webkit-backdrop-filter: blur(12px);
   backdrop-filter: blur(12px);
+  box-shadow: var(--sf-panel-shadow);
 }
 .sf-dashboard-focus {
   transition:
@@ -555,8 +553,11 @@ html.dark .sf-contact-shell {
   background: color-mix(in srgb, var(--sf-card) 82%, transparent);
   -webkit-backdrop-filter: blur(14px);
   backdrop-filter: blur(14px);
-  box-shadow: 0 20px 60px rgba(0, 0, 0, 0.28);
+  box-shadow: var(--sf-panel-shadow), 0 20px 60px rgba(0, 0, 0, 0.12);
   animation: fade-up 0.4s ease-out;
+}
+html.dark .sf-generating-card {
+  box-shadow: var(--sf-panel-shadow), 0 20px 60px rgba(0, 0, 0, 0.28);
 }
 @keyframes sf-shimmer {
   0% {
@@ -581,6 +582,7 @@ html.dark .sf-contact-shell {
   border-radius: 1rem;
   border: 1px solid var(--sf-border);
   background: color-mix(in srgb, var(--sf-card) 90%, transparent);
+  box-shadow: var(--sf-panel-shadow);
   transition:
     width 0.5s ease,
     transform 0.5s ease,
@@ -619,8 +621,11 @@ html.dark .sf-contact-shell {
   border-radius: 1rem;
   border: 1px solid var(--sf-border);
   background: color-mix(in srgb, var(--sf-card) 72%, transparent);
-  box-shadow: 0 10px 24px rgba(0, 0, 0, 0.14);
+  box-shadow: var(--sf-panel-shadow), 0 10px 24px rgba(0, 0, 0, 0.1);
   animation: sf-float-thumb 5.2s ease-in-out infinite;
+}
+html.dark .sf-floating-thumb {
+  box-shadow: var(--sf-panel-shadow), 0 10px 24px rgba(0, 0, 0, 0.14);
 }
 @media (max-width: 480px) {
   .sf-floating-thumb {
@@ -646,7 +651,10 @@ html.dark .sf-contact-shell {
   background: color-mix(in srgb, var(--sf-card) 88%, transparent);
   -webkit-backdrop-filter: blur(10px);
   backdrop-filter: blur(10px);
-  box-shadow: 0 14px 28px rgba(0, 0, 0, 0.14);
+  box-shadow: var(--sf-panel-shadow), 0 14px 28px rgba(0, 0, 0, 0.08);
+}
+html.dark .sf-inline-toolbar {
+  box-shadow: var(--sf-panel-shadow), 0 14px 28px rgba(0, 0, 0, 0.14);
 }
 .sf-inline-tool-btn {
   border: 1px solid var(--sf-border);
@@ -721,6 +729,15 @@ html.dark .sf-contact-shell {
   box-shadow: 0 0 10px var(--sf-glow);
 }
 
+.sf-site-header {
+  box-shadow: var(--sf-panel-shadow);
+}
+
+/** Use on bordered panels that are not already covered by sf-* surface classes (light mode lift). */
+.sf-elevate {
+  box-shadow: var(--sf-panel-shadow);
+}
+
 .sf-footer-underline {
   position: relative;
   color: var(--sf-text-muted);
@@ -793,7 +810,7 @@ html.dark .sf-contact-shell {
   backdrop-filter: blur(14px);
   -webkit-backdrop-filter: blur(14px);
   transition: opacity 0.28s ease, transform 0.28s ease;
-  background: rgba(247, 248, 252, 0.9);
+  background: rgba(240, 243, 250, 0.92);
 }
 html.dark .sf-page-loader {
   background: rgba(11, 15, 26, 0.9);
@@ -813,7 +830,10 @@ html.dark .sf-page-loader {
   background: var(--sf-card);
   padding: 34px 26px 28px;
   text-align: center;
-  box-shadow: 0 24px 70px rgba(0, 0, 0, 0.18);
+  box-shadow: var(--sf-panel-shadow), 0 24px 70px rgba(0, 0, 0, 0.12);
+}
+html.dark .sf-page-loader-card {
+  box-shadow: var(--sf-panel-shadow), 0 24px 70px rgba(0, 0, 0, 0.18);
 }
 .sf-page-loader-logo {
   font-size: 1.45rem;
@@ -920,8 +940,11 @@ html.dark .sf-page-loader {
   padding: 1rem;
   -webkit-backdrop-filter: blur(12px);
   backdrop-filter: blur(12px);
-  box-shadow: 0 14px 36px rgba(0, 0, 0, 0.16);
+  box-shadow: var(--sf-panel-shadow), 0 14px 36px rgba(0, 0, 0, 0.1);
   animation: sf-auth-card-float 5.8s ease-in-out infinite;
+}
+html.dark .sf-auth-mock-card {
+  box-shadow: var(--sf-panel-shadow), 0 14px 36px rgba(0, 0, 0, 0.16);
 }
 .sf-auth-mock-delay {
   animation-delay: 0.8s;
@@ -937,15 +960,16 @@ html.dark .sf-page-loader {
   background: color-mix(in srgb, var(--sf-card) 78%, transparent);
   -webkit-backdrop-filter: blur(16px);
   backdrop-filter: blur(16px);
-  box-shadow: 0 20px 54px rgba(0, 0, 0, 0.16);
+  box-shadow: var(--sf-panel-shadow), 0 20px 54px rgba(0, 0, 0, 0.1);
   animation: fade-up 0.45s ease-out;
 }
 html.dark .sf-auth-card {
-  box-shadow: 0 20px 54px rgba(0, 0, 0, 0.36);
+  box-shadow: var(--sf-panel-shadow), 0 20px 54px rgba(0, 0, 0, 0.36);
 }
 .sf-auth-tabs {
   border: 1px solid var(--sf-border);
   background: color-mix(in srgb, var(--sf-card) 90%, transparent);
+  box-shadow: var(--sf-panel-shadow);
 }
 .sf-auth-tab-indicator {
   position: absolute;

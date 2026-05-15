@@ -7,6 +7,7 @@ import { GlobalCursorFx } from "./components/GlobalCursorFx";
 import { GlobalSignUpToast } from "./components/GlobalSignUpToast";
 import { GlobalZeroCreditsToast } from "./components/GlobalZeroCreditsToast";
 import { PromoCreditsBootstrap } from "./components/PromoCreditsBootstrap";
+import { Providers } from "./components/Providers";
 import "./globals.css";
 
 const geistSans = Geist({
@@ -60,7 +61,7 @@ export default function RootLayout({
           <GlobalSignUpToast />
         </Suspense>
         <GlobalZeroCreditsToast />
-        {children}
+        <Providers>{children}</Providers>
       </body>
     </html>
   );

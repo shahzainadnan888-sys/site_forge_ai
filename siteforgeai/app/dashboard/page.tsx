@@ -7,6 +7,8 @@ import { Footer } from "../components/Footer";
 import { Navbar } from "../components/Navbar";
 import { getCurrentServerUser } from "@/lib/auth/current-user";
 
+export const dynamic = "force-dynamic";
+
 export const metadata: Metadata = {
   title: "Dashboard — SiteForge AI",
   description:

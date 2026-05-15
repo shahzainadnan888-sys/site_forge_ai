@@ -1,6 +1,11 @@
 import { FieldValue } from "firebase-admin/firestore";
 import { NextResponse } from "next/server";
 import { requireCurrentServerUser } from "@/lib/auth/current-user";
+import { normalizePageSlug } from "@/lib/generated-site/normalize-slug";
+import { reconcileGeneratedPages } from "@/lib/generated-site/reconcile-pages";
+import { preparePublishedHtml } from "@/lib/generated-site/sanitize-published-html";
+import { primaryHtmlFromPages } from "@/lib/generated-site/split-pages";
+import type { SitePageMap } from "@/lib/generated-site/types";
 import { adminDb } from "@/lib/firebase/admin";
 import { assertSameOrigin, CsrfError } from "@/lib/security/csrf";
 import { enforceRateLimit, enforceRateLimitByIp, RateLimitError } from "@/lib/security/rate-limit";
@@ -14,6 +19,8 @@ type Body = {
   userId?: string;
   html?: string;
   username?: string;
+  /** Multi-page site: slug -> full HTML (slug "" = home). */
+  pages?: Record<string, string>;
 };
 
 function looksLikeFullHtml(s: string) {
@@ -38,19 +45,45 @@ export async function POST(request: Request) {
     enforceRateLimitByIp(request, "publish-site-ip", { limit: 20, windowMs: 60_000 });
 
     const body = (await request.json()) as Body;
-    const html = typeof body.html === "string" ? body.html : "";
     const username = normalizeUsername(body.username);
-    if (Buffer.byteLength(html, "utf-8") > MAX_HTML_BYTES) {
+
+    let pages: SitePageMap = {};
+    if (body.pages && typeof body.pages === "object" && !Array.isArray(body.pages)) {
+      for (const [k, v] of Object.entries(body.pages)) {
+        if (typeof v === "string" && looksLikeFullHtml(v)) {
+          pages[normalizePageSlug(k)] = v;
+        }
+      }
+    }
+    const html =
+      typeof body.html === "string" && looksLikeFullHtml(body.html)
+        ? body.html
+        : primaryHtmlFromPages(pages);
+    if (html && !pages[""]) {
+      pages[""] = html;
+    }
+
+    if (Object.keys(pages).length > 0) {
+      pages = reconcileGeneratedPages(pages, { forceExpand: true });
+    }
+
+    const totalBytes = Object.values(pages).reduce((n, p) => n + Buffer.byteLength(p, "utf-8"), 0);
+    if (totalBytes > MAX_HTML_BYTES) {
       return NextResponse.json(
         { ok: false, error: "HTML is too large to publish. Try trimming the page and saving again." },
         { status: 413 }
       );
     }
-    if (!html.trim() || !looksLikeFullHtml(html)) {
+    if (!html.trim() || !looksLikeFullHtml(html) || Object.keys(pages).length === 0) {
       return NextResponse.json(
         { ok: false, error: "Valid full HTML (with doctype) is required to publish." },
         { status: 400 }
       );
+    }
+
+    const publishedPages: SitePageMap = {};
+    for (const [slug, pageHtml] of Object.entries(pages)) {
+      publishedPages[slug] = preparePublishedHtml(pageHtml, username, slug);
     }
     if (!username || username.length < 3) {
       return NextResponse.json(
@@ -83,7 +116,8 @@ export async function POST(request: Request) {
       {
         username,
         userId: currentUser.uid,
-        htmlContent: html,
+        htmlContent: publishedPages[""] ?? preparePublishedHtml(html, username, ""),
+        pages: publishedPages,
         createdAt: existingDoc ? existingDoc.data().createdAt : FieldValue.serverTimestamp(),
         updatedAt: FieldValue.serverTimestamp(),
       },

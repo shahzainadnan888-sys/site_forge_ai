@@ -8,7 +8,12 @@ const SESSION_KEY = "siteforge-session";
  */
 export async function syncSessionCreditsFromServer(): Promise<number | null> {
   try {
-    const res = await fetch("/api/auth/me", { cache: "no-store" });
+    const res = await fetch("/api/auth/me", { cache: "no-store", credentials: "include" });
+    if (res.status === 401 || res.status === 403) {
+      localStorage.removeItem(SESSION_KEY);
+      emitSiteforgeSessionUpdate();
+      return null;
+    }
     const data = (await res.json().catch(() => null)) as
       | {
           ok: true;

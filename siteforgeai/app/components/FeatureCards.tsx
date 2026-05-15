@@ -97,7 +97,7 @@ export function FeatureCards() {
           return (
             <li
               key={f.title}
-              className="sf-card-hover rounded-2xl border p-6 sm:p-8"
+              className="sf-elevate sf-card-hover rounded-2xl border p-6 sm:p-8"
               style={{
                 background: "var(--sf-card)",
                 borderColor: "var(--sf-border)",

@@ -1,68 +1,17 @@
 "use client";
 
-import { useRouter } from "next/navigation";
-import { useSearchParams } from "next/navigation";
+import { useRouter, useSearchParams } from "next/navigation";
 import { Suspense, useEffect, useState } from "react";
-import {
-  createUserWithEmailAndPassword,
-  browserLocalPersistence,
-  sendEmailVerification,
-  signOut,
-  signInWithEmailAndPassword,
-  fetchSignInMethodsForEmail,
-  setPersistence,
-  updateProfile,
-} from "firebase/auth";
-import { firebase, signInWithGoogle } from "@/lib/firebase";
-import { setLocalStorageFreeCreditsClaimed } from "@/lib/client-free-credit-signals";
+import { signIn, signOut, useSession } from "next-auth/react";
 import { SERVICE_FEATURE_CARDS } from "@/lib/service-feature-cards";
-import { emitSiteforgeSessionUpdate } from "@/lib/siteforge-credits";
 
-type AuthTab = "signin" | "signup";
-type SignupPhase = "form" | "otp";
-
-type FirebaseLoginError = {
-  code?: string;
-  message?: string;
-};
-
-type MeResponse = {
-  ok: boolean;
-  user?: {
-    uid: string;
-    fullName: string;
-    email: string;
-    emailVerified?: boolean;
-    credits: number;
-    avatarDataUrl?: string;
-    freeCreditsClaimed?: boolean;
-    freeCreditsBlocked?: boolean;
-  };
-  error?: string;
-};
-
-const OTP_SECONDS = 5 * 60;
 const EMAIL_REGEX = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
-const OTP_REGEX = /^\d{6}$/;
+const OTP_SECONDS = 15 * 60;
 
 function formatMmSs(totalSeconds: number): string {
   const m = Math.floor(totalSeconds / 60);
   const s = totalSeconds % 60;
   return `${String(m).padStart(2, "0")}:${String(s).padStart(2, "0")}`;
-}
-
-function readDeviceContext() {
-  if (typeof window === "undefined") return {};
-  const screenValue =
-    typeof window.screen?.width === "number" && typeof window.screen?.height === "number"
-      ? `${window.screen.width}x${window.screen.height}`
-      : "";
-  return {
-    timezone: Intl.DateTimeFormat().resolvedOptions().timeZone || "",
-    screen: screenValue,
-    platform: navigator.platform || "",
-    userAgent: navigator.userAgent || "",
-  };
 }
 
 function GoogleMark() {
@@ -114,309 +63,262 @@ export function GetStartedView() {
   );
 }
 
+type ProfileSyncState = "idle" | "opening" | "ready" | "pending";
+type AuthTab = "signin" | "signup";
+type SignupStep = "details" | "otp";
+
 function GetStartedViewInner() {
   const router = useRouter();
   const searchParams = useSearchParams();
+  const { status } = useSession();
   const [tab, setTab] = useState<AuthTab>("signin");
-  const [signupPhase, setSignupPhase] = useState<SignupPhase>("form");
-  const [busyEmail, setBusyEmail] = useState(false);
   const [busyGoogle, setBusyGoogle] = useState(false);
-  const [busyResendOtp, setBusyResendOtp] = useState(false);
+  const [busyCredentials, setBusyCredentials] = useState(false);
   const [error, setError] = useState("");
+  const [profileSync, setProfileSync] = useState<ProfileSyncState>("idle");
   const [email, setEmail] = useState("");
   const [password, setPassword] = useState("");
-  const [otp, setOtp] = useState("");
   const [fullName, setFullName] = useState("");
   const [confirmPassword, setConfirmPassword] = useState("");
   const [showPassword, setShowPassword] = useState(false);
   const [showConfirmPassword, setShowConfirmPassword] = useState(false);
-  const [info, setInfo] = useState("");
+  const [signupStep, setSignupStep] = useState<SignupStep>("details");
+  const [otp, setOtp] = useState("");
   const [otpRemainingSec, setOtpRemainingSec] = useState(0);
-  const [showResendVerification, setShowResendVerification] = useState(false);
-  const [busyResendVerification, setBusyResendVerification] = useState(false);
-  const SESSION_KEY = "siteforge-session";
+  const [info, setInfo] = useState("");
+  const [busySendOtp, setBusySendOtp] = useState(false);
+  const [busyVerifyOtp, setBusyVerifyOtp] = useState(false);
+  const [busyResendOtp, setBusyResendOtp] = useState(false);
   const entryMessage = searchParams.get("message")?.trim() || "";
 
-  const otpExpired = signupPhase === "otp" && otpRemainingSec <= 0;
-
-  /** Count down while on OTP step; OTP expires server-side after 5 minutes — UI mirrors that window. */
   useEffect(() => {
-    if (signupPhase !== "otp") return;
+    if (signupStep !== "otp" || otpRemainingSec <= 0) return;
     const id = window.setInterval(() => {
       setOtpRemainingSec((s) => Math.max(0, s - 1));
     }, 1000);
     return () => window.clearInterval(id);
-  }, [signupPhase]);
+  }, [signupStep, otpRemainingSec]);
 
-  const establishSession = async (idToken: string, grantSignupCredits = false) => {
-    const sessionRes = await fetch("/api/auth/session", {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ idToken, grantSignupCredits, deviceContext: readDeviceContext() }),
-    });
-    if (!sessionRes.ok) {
-      const details = (await sessionRes.json().catch(() => null)) as { error?: string } | null;
-      throw new Error(details?.error || "Failed to create secure sign-in session.");
+  useEffect(() => {
+    if (status !== "authenticated") {
+      setProfileSync("idle");
+      return;
     }
-
-    const auth = firebase.auth;
-    const user = auth.currentUser;
-    if (!user) throw new Error("No authenticated user found.");
-
-    const meRes = await fetch("/api/auth/me", { cache: "no-store" });
-    const me = (await meRes.json().catch(() => null)) as MeResponse | null;
-    if (!meRes.ok || !me?.ok || !me.user) {
-      throw new Error(me?.error || "Failed to load your account session.");
-    }
-
-    if (me.user.freeCreditsClaimed) {
-      setLocalStorageFreeCreditsClaimed();
-    }
-
-    localStorage.setItem(
-      SESSION_KEY,
-      JSON.stringify({
-        uid: me.user.uid,
-        fullName: me.user.fullName,
-        email: me.user.email,
-        emailVerified: user.emailVerified === true,
-        credits: me.user.credits,
-        ...(me.user.avatarDataUrl ? { avatarDataUrl: me.user.avatarDataUrl } : {}),
-        freeCreditsBlocked: me.user.freeCreditsBlocked === true,
-      })
-    );
-    emitSiteforgeSessionUpdate();
-    router.push("/dashboard");
-  };
-
-  const sendOtpToEmail = async (cleanEmail: string) => {
-    const res = await fetch("/api/send-otp", {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ email: cleanEmail }),
-    });
-    const data = (await res.json().catch(() => null)) as { success?: boolean; error?: string } | null;
-    if (!res.ok || !data?.success) {
-      throw new Error(data?.error || "Failed to send OTP.");
-    }
-    setEmail(cleanEmail);
-    setOtpRemainingSec(OTP_SECONDS);
-    setSignupPhase("otp");
-    setOtp("");
-    setInfo("OTP sent to your email");
-  };
-
-  const handleSignupStartOtp = async () => {
-    setError("");
-    setInfo("");
-    const cleanEmail = email.trim().toLowerCase();
-    if (!fullName.trim()) throw new Error("Full name is required for sign up.");
-    if (!cleanEmail || !password.trim()) throw new Error("Email and password are required.");
-    if (!EMAIL_REGEX.test(cleanEmail)) throw new Error("Please enter a valid email address.");
-    if (password.length < 6) throw new Error("Password must be at least 6 characters.");
-    if (password !== confirmPassword) throw new Error("Passwords do not match.");
-
-    await sendOtpToEmail(cleanEmail);
-  };
-
-  const handleResendOtp = async () => {
-    if (busyResendOtp || otpRemainingSec > 0) return;
-    setBusyResendOtp(true);
-    setError("");
-    try {
-      const cleanEmail = email.trim().toLowerCase();
-      if (!cleanEmail || !password.trim()) {
-        throw new Error("Email and password are required.");
+    let cancelled = false;
+    setProfileSync("opening");
+    void (async () => {
+      const res = await fetch("/api/auth/me", { cache: "no-store", credentials: "include" });
+      const data = (await res.json().catch(() => null)) as { ok?: boolean } | null;
+      if (cancelled) return;
+      if (res.ok && data?.ok) {
+        setProfileSync("ready");
+        router.replace("/dashboard");
+        return;
       }
-      await sendOtpToEmail(cleanEmail);
-      setInfo("New OTP sent to your email");
-    } catch (e) {
-      const err = e as FirebaseLoginError;
-      setError(err.message || "Could not resend OTP.");
-    } finally {
-      setBusyResendOtp(false);
-    }
-  };
+      setProfileSync("pending");
+    })();
+    return () => {
+      cancelled = true;
+    };
+  }, [status, router]);
 
-  const handleVerifyOtpAndCreateAccount = async () => {
-    setBusyEmail(true);
-    setError("");
-    setInfo("");
-    try {
-      const cleanEmail = email.trim().toLowerCase();
-      const cleanOtp = otp.replace(/\D/g, "").slice(0, 6);
-      if (!cleanEmail || !password.trim()) throw new Error("Email and password are required.");
-      if (otpExpired) throw new Error("OTP expired. Tap Resend OTP to get a new code.");
-      if (!OTP_REGEX.test(cleanOtp)) throw new Error("Please enter the 6-digit OTP.");
-
-      const verifyRes = await fetch("/api/verify-otp", {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ email: cleanEmail, otp: cleanOtp }),
-      });
-      const verifyData = (await verifyRes.json().catch(() => null)) as
-        | { success?: boolean; error?: string }
-        | null;
-      if (!verifyRes.ok || !verifyData?.success) {
-        throw new Error(verifyData?.error || "Invalid OTP.");
-      }
-
-      setInfo("Verification successful");
-
-      const auth = firebase.auth;
-      if (!auth) throw new Error("Firebase auth not initialized. Check your env keys.");
-      await setPersistence(auth, browserLocalPersistence);
-      const credential = await createUserWithEmailAndPassword(auth, cleanEmail, password);
-      await updateProfile(credential.user, { displayName: fullName.trim() });
-
-      const idToken = await credential.user.getIdToken();
-      await establishSession(idToken, true);
-    } catch (e) {
-      const err = e as FirebaseLoginError;
-      const code = err?.code || "";
-      if (code === "auth/email-already-in-use") setError("Email already in use. Try Sign In.");
-      else if (code === "auth/invalid-email") setError("Please enter a valid email address.");
-      else if (code === "auth/weak-password") setError("Use a stronger password (at least 6 characters).");
-      else setError(err?.message || "Unable to complete verification.");
-    } finally {
-      setBusyEmail(false);
-    }
-  };
-
-  const resetSignupOtpFlow = () => {
-    setSignupPhase("form");
-    setOtp("");
-    setOtpRemainingSec(0);
-    setInfo("");
-    setError("");
-  };
-
-  const handleGoogle = async () => {
+  const handleContinueWithGoogle = async () => {
     setBusyGoogle(true);
     setError("");
-    setInfo("");
-    setShowResendVerification(false);
-
     try {
-      const auth = firebase.auth;
-      if (!auth) throw new Error("Firebase auth not initialized. Check your env keys.");
-
-      await setPersistence(auth, browserLocalPersistence);
-      const credential = await signInWithGoogle();
-      const idToken = await credential.user.getIdToken();
-      await establishSession(idToken, false);
+      const hint = email.trim().toLowerCase();
+      await signIn("google", {
+        callbackUrl: "/get-started",
+        ...(hint && EMAIL_REGEX.test(hint) ? { login_hint: hint } : {}),
+      });
     } catch (e) {
-      const err = e as FirebaseLoginError;
-      const msg = err?.message || "Unable to continue with Google sign-in.";
-      if (err?.code === "auth/popup-closed-by-user") {
-        setError("Google sign-in cancelled.");
-      } else if (err?.code === "auth/popup-blocked" || err?.code === "auth/cancelled-popup-request") {
-        setError("Popup was blocked by your browser. Please allow popups and try again.");
-      } else if (err?.code === "auth/unauthorized-domain") {
-        setError("This domain is not authorized in Firebase Authentication.");
-      } else {
-        setError(msg);
-      }
+      const err = e as Error;
+      setError(err.message || "Unable to continue with Google sign-in.");
     } finally {
       setBusyGoogle(false);
     }
   };
 
-  const handleEmailAuth = async () => {
-    if (tab === "signup" && signupPhase === "otp") {
-      await handleVerifyOtpAndCreateAccount();
+  const handleEmailPasswordSignIn = async () => {
+    setError("");
+    setInfo("");
+    const cleanEmail = email.trim().toLowerCase();
+    if (!cleanEmail || !EMAIL_REGEX.test(cleanEmail)) {
+      setError("Please enter a valid email address.");
       return;
     }
-
-    setBusyEmail(true);
-    setError("");
-    setInfo("");
-    setShowResendVerification(false);
+    if (!password) {
+      setError("Password is required.");
+      return;
+    }
+    setBusyCredentials(true);
     try {
-      const auth = firebase.auth;
-      if (!auth) throw new Error("Firebase auth not initialized. Check your env keys.");
-      await setPersistence(auth, browserLocalPersistence);
-
-      const cleanEmail = email.trim();
-      if (!cleanEmail || !password.trim()) {
-        throw new Error("Email and password are required.");
-      }
-
-      if (tab === "signup") {
-        await handleSignupStartOtp();
+      const res = await signIn("credentials", {
+        email: cleanEmail,
+        password,
+        redirect: false,
+      });
+      if (res?.error) {
+        setError("No account found, or the password is incorrect.");
         return;
       }
-
-      const existingMethods = await fetchSignInMethodsForEmail(auth, cleanEmail);
-      if (!existingMethods.length) {
-        throw Object.assign(new Error("No account found. Please create an account first."), {
-          code: "auth/user-not-found",
-        });
-      }
-
-      const credential = await signInWithEmailAndPassword(auth, cleanEmail, password);
-      const idToken = await credential.user.getIdToken();
-      await establishSession(idToken, false);
+      router.replace("/dashboard");
     } catch (e) {
-      const err = e as FirebaseLoginError;
-      const code = err?.code || "";
-      if (code === "auth/email-already-in-use") setError("Email already in use. Try Sign In.");
-      else if (code === "auth/invalid-credential" || code === "auth/wrong-password")
-        setError("Invalid email or password.");
-      else if (code === "auth/user-not-found") setError("No account found. Please Sign Up.");
-      else if (code === "auth/invalid-email") setError("Please enter a valid email address.");
-      else if (code === "auth/operation-not-allowed")
-        setError(
-          "Email and password sign-in is turned off in Firebase. Open Firebase Console → Authentication → Sign-in method, then enable Email/Password."
-        );
-      else if (code === "auth/weak-password") setError("Use a stronger password (at least 6 characters).");
-      else setError(err?.message || "Unable to continue with email/password.");
+      const err = e as Error;
+      setError(err.message || "Sign-in failed.");
     } finally {
-      setBusyEmail(false);
+      setBusyCredentials(false);
     }
   };
 
-  const handleResendVerification = async () => {
-    if (busyResendVerification) return;
-    setBusyResendVerification(true);
+  const validateSignupDetailsForOtp = (): boolean => {
+    setError("");
+    setInfo("");
+    if (!fullName.trim()) {
+      setError("Full name is required.");
+      return false;
+    }
+    const cleanEmail = email.trim().toLowerCase();
+    if (!cleanEmail || !EMAIL_REGEX.test(cleanEmail)) {
+      setError("Please enter a valid email address.");
+      return false;
+    }
+    if (password.length < 6) {
+      setError("Password must be at least 6 characters.");
+      return false;
+    }
+    if (password !== confirmPassword) {
+      setError("Passwords do not match.");
+      return false;
+    }
+    return true;
+  };
+
+  const handleSendSignupOtp = async () => {
+    if (!validateSignupDetailsForOtp()) return;
+    setBusySendOtp(true);
     setError("");
     setInfo("");
     try {
-      const auth = firebase.auth;
-      if (!auth) throw new Error("Firebase auth not initialized. Check your env keys.");
-      const cleanEmail = email.trim();
-      if (!cleanEmail || !password.trim()) {
-        throw new Error("Enter your email and password first, then resend verification.");
+      const res = await fetch("/api/auth/send-signup-otp", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          email: email.trim().toLowerCase(),
+          fullName: fullName.trim(),
+          password,
+          confirmPassword,
+        }),
+        credentials: "include",
+      });
+      const data = (await res.json().catch(() => null)) as { ok?: boolean; error?: string } | null;
+      if (!res.ok || !data?.ok) {
+        setError(data?.error || "Could not send verification email.");
+        return;
       }
-      const credential = await signInWithEmailAndPassword(auth, cleanEmail, password);
-      await sendEmailVerification(credential.user);
-      await signOut(auth);
-      setInfo("Verification email sent. Check your inbox.");
-    } catch (e) {
-      const err = e as FirebaseLoginError;
-      setError(err?.message || "Could not resend verification email.");
+      setSignupStep("otp");
+      setOtpRemainingSec(OTP_SECONDS);
+      setOtp("");
+      setInfo("A verification code has been sent to this email.");
     } finally {
-      setBusyResendVerification(false);
+      setBusySendOtp(false);
     }
   };
 
-  const primaryDisabled =
-    busyEmail ||
-    busyGoogle ||
-    (tab === "signup" && signupPhase === "otp" && (otpExpired || busyResendOtp));
+  const handleVerifyOtpAndCompleteSignup = async () => {
+    const cleanEmail = email.trim().toLowerCase();
+    const cleanOtp = otp.replace(/\D/g, "").slice(0, 6);
+    if (!EMAIL_REGEX.test(cleanEmail)) {
+      setError("Invalid email.");
+      return;
+    }
+    if (cleanOtp.length !== 6) {
+      setError("Enter the 6-digit code.");
+      return;
+    }
+    setBusyVerifyOtp(true);
+    setError("");
+    setInfo("");
+    try {
+      const verifyRes = await fetch("/api/auth/verify-signup-otp", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ email: cleanEmail, otp: cleanOtp }),
+        credentials: "include",
+      });
+      const verifyData = (await verifyRes.json().catch(() => null)) as { ok?: boolean; error?: string } | null;
+      if (!verifyRes.ok || !verifyData?.ok) {
+        setError(verifyData?.error || "Verification failed.");
+        return;
+      }
+      const completeRes = await fetch("/api/auth/complete-signup", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          email: cleanEmail,
+          password,
+          fullName: fullName.trim(),
+        }),
+        credentials: "include",
+      });
+      const completeData = (await completeRes.json().catch(() => null)) as { ok?: boolean; error?: string } | null;
+      if (!completeRes.ok || !completeData?.ok) {
+        setError(completeData?.error || "Could not finish creating your account.");
+        return;
+      }
+      const sessionRes = await signIn("credentials", {
+        email: cleanEmail,
+        password,
+        redirect: false,
+      });
+      if (sessionRes?.error) {
+        setError("Account created, but sign-in failed. Try signing in with your email and password.");
+        return;
+      }
+      router.replace("/dashboard");
+    } finally {
+      setBusyVerifyOtp(false);
+    }
+  };
 
-  const primaryLabel =
-    tab === "signin"
-      ? busyEmail
-        ? "Signing in..."
-        : "Sign in"
-      : signupPhase === "otp"
-        ? busyEmail
-          ? "Verifying..."
-          : "Verify OTP"
-        : busyEmail
-          ? "Sending OTP..."
-          : "Create account";
+  const handleResendSignupOtp = async () => {
+    if (busyResendOtp) return;
+    if (!validateSignupDetailsForOtp()) return;
+    setBusyResendOtp(true);
+    setError("");
+    try {
+      const res = await fetch("/api/auth/send-signup-otp", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          email: email.trim().toLowerCase(),
+          fullName: fullName.trim(),
+          password,
+          confirmPassword,
+        }),
+        credentials: "include",
+      });
+      const data = (await res.json().catch(() => null)) as { ok?: boolean; error?: string } | null;
+      if (!res.ok || !data?.ok) {
+        setError(data?.error || "Could not resend code.");
+        return;
+      }
+      setOtpRemainingSec(OTP_SECONDS);
+      setOtp("");
+      setInfo("A new code was sent to your email.");
+    } finally {
+      setBusyResendOtp(false);
+    }
+  };
+
+  const sessionBusy = profileSync === "opening" || profileSync === "ready";
+  const otpExpired = signupStep === "otp" && otpRemainingSec <= 0;
+  const signInFormBusy = sessionBusy || busyCredentials || busyGoogle || busySendOtp || busyVerifyOtp || busyResendOtp;
+  const googleButtonBusy = sessionBusy || busyGoogle || busyCredentials;
+  const signupDetailsBusy = sessionBusy || busySendOtp || busyVerifyOtp || busyResendOtp;
+  const signupOtpBusy = sessionBusy || busySendOtp || busyVerifyOtp || busyResendOtp;
+
+  const googleButtonLabel = busyGoogle ? "Continuing..." : "Continue with Google";
 
   return (
     <section className="sf-hide-inner-scrollbars relative min-h-[calc(100vh-4rem)] overflow-hidden">
@@ -540,7 +442,13 @@ function GetStartedViewInner() {
                 type="button"
                 onClick={() => {
                   setTab("signin");
-                  resetSignupOtpFlow();
+                  setError("");
+                  setInfo("");
+                  setFullName("");
+                  setConfirmPassword("");
+                  setSignupStep("details");
+                  setOtp("");
+                  setOtpRemainingSec(0);
                 }}
                 className="relative z-10 rounded-lg px-4 py-2 text-sm font-semibold"
                 style={{ color: tab === "signin" ? "white" : "var(--sf-text-muted)" }}
@@ -551,7 +459,11 @@ function GetStartedViewInner() {
                 type="button"
                 onClick={() => {
                   setTab("signup");
-                  resetSignupOtpFlow();
+                  setError("");
+                  setInfo("");
+                  setSignupStep("details");
+                  setOtp("");
+                  setOtpRemainingSec(0);
                 }}
                 className="relative z-10 rounded-lg px-4 py-2 text-sm font-semibold"
                 style={{ color: tab === "signup" ? "white" : "var(--sf-text-muted)" }}
@@ -561,13 +473,13 @@ function GetStartedViewInner() {
             </div>
 
             <div className="relative mt-6 min-h-[430px]">
-              <div className="rounded-2xl border p-5" style={{ borderColor: "var(--sf-border)" }}>
+              <div className="sf-elevate rounded-2xl border p-5" style={{ borderColor: "var(--sf-border)" }}>
                 <p className="text-sm" style={{ color: "var(--sf-text-muted)" }}>
                   {tab === "signin"
                     ? "Sign in to continue to your account."
-                    : signupPhase === "otp"
-                      ? "Enter the 6-digit code we emailed you. It expires in 5 minutes."
-                      : "Create your account instantly with Google."}
+                    : signupStep === "otp"
+                      ? "Enter the verification code we emailed you."
+                      : "Create your account. We will email a code to verify your address."}
                 </p>
                 {entryMessage ? (
                   <p className="mt-3 text-sm" style={{ color: "var(--sf-accent-from)" }}>
@@ -575,45 +487,14 @@ function GetStartedViewInner() {
                   </p>
                 ) : null}
 
-                {tab === "signup" && signupPhase === "otp" ? (
+                {tab === "signin" ? (
                   <>
-                    <p className="mt-4 text-xs" style={{ color: "var(--sf-text-muted)" }}>
-                      Signing up as <span style={{ color: "var(--sf-text)" }}>{email}</span>
-                    </p>
-                    <div className="mt-2 flex items-center justify-between gap-2 text-xs font-medium">
-                      <span style={{ color: otpExpired ? "#f87171" : "var(--sf-accent-from)" }}>
-                        {otpExpired ? "OTP expired" : `Expires in ${formatMmSs(otpRemainingSec)}`}
-                      </span>
-                    </div>
-                    <input
-                      type="text"
-                      value={otp}
-                      onChange={(e) => setOtp(e.target.value.replace(/\D/g, "").slice(0, 6))}
-                      placeholder="6-digit OTP"
-                      disabled={otpExpired}
-                      className="mt-3 h-11 w-full rounded-xl border bg-transparent px-4 text-sm outline-none tracking-[0.35em]"
-                      style={{ borderColor: "var(--sf-border)", color: "var(--sf-text)" }}
-                      inputMode="numeric"
-                      maxLength={6}
-                    />
-                  </>
-                ) : (
-                  <>
-                    {tab === "signup" && (
-                      <input
-                        type="text"
-                        value={fullName}
-                        onChange={(e) => setFullName(e.target.value)}
-                        placeholder="Full name"
-                        className="mt-4 h-11 w-full rounded-xl border bg-transparent px-4 text-sm outline-none"
-                        style={{ borderColor: "var(--sf-border)", color: "var(--sf-text)" }}
-                      />
-                    )}
                     <input
                       type="email"
                       value={email}
                       onChange={(e) => setEmail(e.target.value)}
                       placeholder="Email"
+                      autoComplete="email"
                       className="mt-4 h-11 w-full rounded-xl border bg-transparent px-4 text-sm outline-none"
                       style={{ borderColor: "var(--sf-border)", color: "var(--sf-text)" }}
                     />
@@ -623,6 +504,7 @@ function GetStartedViewInner() {
                         value={password}
                         onChange={(e) => setPassword(e.target.value)}
                         placeholder="Password"
+                        autoComplete="current-password"
                         className="h-11 w-full rounded-xl border bg-transparent px-4 pr-11 text-sm outline-none"
                         style={{ borderColor: "var(--sf-border)", color: "var(--sf-text)" }}
                       />
@@ -636,13 +518,73 @@ function GetStartedViewInner() {
                         <EyeIcon open={showPassword} />
                       </button>
                     </div>
-                    {tab === "signup" && (
+                    <button
+                      type="button"
+                      onClick={() => void handleEmailPasswordSignIn()}
+                      disabled={signInFormBusy}
+                      className="mt-4 inline-flex h-11 w-full items-center justify-center rounded-xl border px-4 text-sm font-semibold transition hover:opacity-95 disabled:cursor-not-allowed disabled:opacity-65"
+                      style={{ borderColor: "var(--sf-border)", color: "var(--sf-text)" }}
+                    >
+                      {busyCredentials ? "Signing in..." : "Sign in"}
+                    </button>
+                    <button
+                      type="button"
+                      onClick={() => void handleContinueWithGoogle()}
+                      disabled={googleButtonBusy}
+                      className="mt-4 inline-flex h-11 w-full items-center justify-center gap-2.5 rounded-xl border px-4 text-sm font-semibold transition hover:opacity-95 disabled:cursor-not-allowed disabled:opacity-65"
+                      style={{ borderColor: "var(--sf-border)", color: "var(--sf-text)" }}
+                    >
+                      <GoogleMark />
+                      {googleButtonLabel}
+                    </button>
+                  </>
+                ) : signupStep === "details" ? (
+                    <>
+                      <input
+                        type="text"
+                        value={fullName}
+                        onChange={(e) => setFullName(e.target.value)}
+                        placeholder="Full name"
+                        autoComplete="name"
+                        className="mt-4 h-11 w-full rounded-xl border bg-transparent px-4 text-sm outline-none"
+                        style={{ borderColor: "var(--sf-border)", color: "var(--sf-text)" }}
+                      />
+                      <input
+                        type="email"
+                        value={email}
+                        onChange={(e) => setEmail(e.target.value)}
+                        placeholder="Email"
+                        autoComplete="email"
+                        className="mt-3 h-11 w-full rounded-xl border bg-transparent px-4 text-sm outline-none"
+                        style={{ borderColor: "var(--sf-border)", color: "var(--sf-text)" }}
+                      />
+                      <div className="relative mt-3">
+                        <input
+                          type={showPassword ? "text" : "password"}
+                          value={password}
+                          onChange={(e) => setPassword(e.target.value)}
+                          placeholder="Password"
+                          autoComplete="new-password"
+                          className="h-11 w-full rounded-xl border bg-transparent px-4 pr-11 text-sm outline-none"
+                          style={{ borderColor: "var(--sf-border)", color: "var(--sf-text)" }}
+                        />
+                        <button
+                          type="button"
+                          onClick={() => setShowPassword((v) => !v)}
+                          className="absolute right-3 top-1/2 -translate-y-1/2"
+                          style={{ color: "var(--sf-text-muted)" }}
+                          aria-label={showPassword ? "Hide password" : "Show password"}
+                        >
+                          <EyeIcon open={showPassword} />
+                        </button>
+                      </div>
                       <div className="relative mt-3">
                         <input
                           type={showConfirmPassword ? "text" : "password"}
                           value={confirmPassword}
                           onChange={(e) => setConfirmPassword(e.target.value)}
                           placeholder="Confirm password"
+                          autoComplete="new-password"
                           className="h-11 w-full rounded-xl border bg-transparent px-4 pr-11 text-sm outline-none"
                           style={{ borderColor: "var(--sf-border)", color: "var(--sf-text)" }}
                         />
@@ -656,78 +598,117 @@ function GetStartedViewInner() {
                           <EyeIcon open={showConfirmPassword} />
                         </button>
                       </div>
-                    )}
-                  </>
-                )}
+                      <button
+                        type="button"
+                        onClick={() => void handleSendSignupOtp()}
+                        disabled={signupDetailsBusy}
+                        className="mt-4 inline-flex h-11 w-full items-center justify-center rounded-xl border px-4 text-sm font-semibold transition hover:opacity-95 disabled:cursor-not-allowed disabled:opacity-65"
+                        style={{ borderColor: "var(--sf-border)", color: "var(--sf-text)" }}
+                      >
+                        {busySendOtp ? "Sending..." : "Create account"}
+                      </button>
+                    </>
+                  ) : (
+                    <>
+                      <p className="mt-4 text-xs" style={{ color: "var(--sf-text-muted)" }}>
+                        Code sent to <span style={{ color: "var(--sf-text)" }}>{email}</span>
+                      </p>
+                      <div className="mt-2 flex items-center justify-between gap-2 text-xs font-medium">
+                        <span style={{ color: otpExpired ? "#f87171" : "var(--sf-accent-from)" }}>
+                          {otpExpired ? "Code expired" : `Expires in ${formatMmSs(otpRemainingSec)}`}
+                        </span>
+                      </div>
+                      <input
+                        type="text"
+                        value={otp}
+                        onChange={(e) => setOtp(e.target.value.replace(/\D/g, "").slice(0, 6))}
+                        placeholder="6-digit code"
+                        disabled={otpExpired}
+                        className="mt-3 h-11 w-full rounded-xl border bg-transparent px-4 text-sm outline-none tracking-[0.35em]"
+                        style={{ borderColor: "var(--sf-border)", color: "var(--sf-text)" }}
+                        inputMode="numeric"
+                        maxLength={6}
+                      />
+                      <button
+                        type="button"
+                        onClick={() => void handleVerifyOtpAndCompleteSignup()}
+                        disabled={signupOtpBusy || otpExpired}
+                        className="mt-4 inline-flex h-11 w-full items-center justify-center rounded-xl border px-4 text-sm font-semibold transition hover:opacity-95 disabled:cursor-not-allowed disabled:opacity-65"
+                        style={{ borderColor: "var(--sf-border)", color: "var(--sf-text)" }}
+                      >
+                        {busyVerifyOtp ? "Finishing..." : "Verify and continue"}
+                      </button>
+                      <button
+                        type="button"
+                        onClick={() => void handleResendSignupOtp()}
+                        disabled={busyResendOtp || busyVerifyOtp}
+                        className="mt-3 inline-flex h-11 w-full items-center justify-center rounded-xl border px-4 text-sm font-semibold transition hover:opacity-95 disabled:cursor-not-allowed disabled:opacity-65"
+                        style={{
+                          borderColor: "var(--sf-accent-from)",
+                          color: "var(--sf-accent-from)",
+                          background: "color-mix(in srgb, var(--sf-accent-from) 12%, transparent)",
+                        }}
+                      >
+                        {busyResendOtp ? "Sending..." : "Resend code"}
+                      </button>
+                      <button
+                        type="button"
+                        onClick={() => {
+                          setSignupStep("details");
+                          setOtp("");
+                          setOtpRemainingSec(0);
+                          setError("");
+                          setInfo("");
+                        }}
+                        disabled={busyVerifyOtp || busyResendOtp}
+                        className="mt-3 inline-flex h-10 w-full items-center justify-center rounded-xl border px-4 text-sm font-semibold transition hover:opacity-95 disabled:cursor-not-allowed disabled:opacity-65"
+                        style={{ borderColor: "var(--sf-border)", color: "var(--sf-text-muted)" }}
+                      >
+                        Back
+                      </button>
+                    </>
+                  )}
 
-                <button
-                  type="button"
-                  onClick={() => void handleEmailAuth()}
-                  disabled={primaryDisabled}
-                  className="mt-4 inline-flex h-11 w-full items-center justify-center rounded-xl border px-4 text-sm font-semibold transition hover:opacity-95 disabled:cursor-not-allowed disabled:opacity-65"
-                  style={{ borderColor: "var(--sf-border)", color: "var(--sf-text)" }}
-                >
-                  {primaryLabel}
-                </button>
-
-                {tab === "signup" && signupPhase === "otp" && otpExpired ? (
-                  <button
-                    type="button"
-                    onClick={() => void handleResendOtp()}
-                    disabled={busyResendOtp}
-                    className="mt-3 inline-flex h-11 w-full items-center justify-center rounded-xl border px-4 text-sm font-semibold transition hover:opacity-95 disabled:cursor-not-allowed disabled:opacity-65"
-                    style={{
-                      borderColor: "var(--sf-accent-from)",
-                      color: "var(--sf-accent-from)",
-                      background: "color-mix(in srgb, var(--sf-accent-from) 12%, transparent)",
-                    }}
-                  >
-                    {busyResendOtp ? "Sending..." : "Resend OTP"}
-                  </button>
-                ) : null}
-
-                {tab === "signup" && signupPhase === "otp" ? (
-                  <button
-                    type="button"
-                    onClick={resetSignupOtpFlow}
-                    disabled={busyEmail || busyResendOtp}
-                    className="mt-3 inline-flex h-10 w-full items-center justify-center rounded-xl border px-4 text-sm font-semibold transition hover:opacity-95 disabled:cursor-not-allowed disabled:opacity-65"
-                    style={{ borderColor: "var(--sf-border)", color: "var(--sf-text-muted)" }}
-                  >
-                    Back to sign up
-                  </button>
-                ) : null}
-
-                <button
-                  type="button"
-                  onClick={handleGoogle}
-                  disabled={busyGoogle || (tab === "signup" && signupPhase === "otp")}
-                  className="mt-4 inline-flex h-11 w-full items-center justify-center gap-2.5 rounded-xl border px-4 text-sm font-semibold transition hover:opacity-95 disabled:cursor-not-allowed disabled:opacity-65"
-                  style={{ borderColor: "var(--sf-border)", color: "var(--sf-text)" }}
-                >
-                  <GoogleMark />
-                  {busyGoogle ? "Continuing..." : "Continue with Google"}
-                </button>
-                {error && (
-                  <p className="mt-3 text-sm text-red-500" role="alert">
-                    {error}
-                  </p>
-                )}
                 {info ? (
                   <p className="mt-3 text-sm" style={{ color: "var(--sf-accent-from)" }}>
                     {info}
                   </p>
                 ) : null}
-                {showResendVerification ? (
-                  <button
-                    type="button"
-                    onClick={handleResendVerification}
-                    disabled={busyResendVerification}
-                    className="mt-3 inline-flex h-10 w-full items-center justify-center rounded-xl border px-4 text-sm font-semibold transition hover:opacity-95 disabled:cursor-not-allowed disabled:opacity-65"
-                    style={{ borderColor: "var(--sf-border)", color: "var(--sf-text)" }}
-                  >
-                    {busyResendVerification ? "Resending..." : "Resend verification email"}
-                  </button>
+
+                {error ? (
+                  <p className="mt-3 text-sm text-red-500" role="alert">
+                    {error}
+                  </p>
+                ) : null}
+
+                {profileSync === "opening" || profileSync === "ready" ? (
+                  <p className="mt-4 text-sm" style={{ color: "var(--sf-text-muted)" }}>
+                    Opening your dashboard…
+                  </p>
+                ) : null}
+
+                {profileSync === "pending" ? (
+                  <div className="mt-4 space-y-3 text-sm" style={{ color: "var(--sf-text-muted)" }}>
+                    <p>You are signed in, but we could not finish loading your workspace yet.</p>
+                    <div className="flex flex-wrap gap-2">
+                      <button
+                        type="button"
+                        className="rounded-lg border px-3 py-1.5 text-xs font-semibold transition hover:opacity-90"
+                        style={{ borderColor: "var(--sf-border)", color: "var(--sf-text)" }}
+                        onClick={() => window.location.reload()}
+                      >
+                        Refresh page
+                      </button>
+                      <button
+                        type="button"
+                        className="rounded-lg border px-3 py-1.5 text-xs font-semibold transition hover:opacity-90"
+                        style={{ borderColor: "var(--sf-border)", color: "var(--sf-text)" }}
+                        onClick={() => void signOut({ callbackUrl: "/get-started" })}
+                      >
+                        Sign out
+                      </button>
+                    </div>
+                  </div>
                 ) : null}
               </div>
             </div>

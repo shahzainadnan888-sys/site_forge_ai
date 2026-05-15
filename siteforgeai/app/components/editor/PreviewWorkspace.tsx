@@ -2,39 +2,35 @@
 
 import { useEffect, useRef, useState } from "react";
 import { useRouter } from "next/navigation";
+import { usePreviewPages } from "@/lib/generated-site/use-preview-pages";
 import {
   claimLegacyProjectIntoUserKeys,
-  getProjectLocalStorageKeys,
   readSessionUidFromLocalStorage,
   subscribeSessionUidChange,
 } from "@/lib/siteforge-project-storage";
-import { enforceSinglePageAnchors } from "@/lib/sanitize-generated-html";
+
 type Device = "pc" | "tablet" | "mobile";
 
 export function PreviewWorkspace() {
   const router = useRouter();
-  const [html, setHtml] = useState("");
   const [device, setDevice] = useState<Device>("pc");
   const iframeRef = useRef<HTMLIFrameElement>(null);
+  const { previewHtml, loadFromStorage } = usePreviewPages();
 
   useEffect(() => {
     const load = () => {
       const uid = readSessionUidFromLocalStorage();
-      if (uid) {
-        claimLegacyProjectIntoUserKeys(uid);
-      }
-      const { htmlKey } = getProjectLocalStorageKeys(uid);
-      const rawHtml = localStorage.getItem(htmlKey) || "";
-      setHtml(rawHtml ? enforceSinglePageAnchors(rawHtml) : "");
+      if (uid) claimLegacyProjectIntoUserKeys(uid);
+      loadFromStorage();
     };
     load();
     return subscribeSessionUidChange(load);
-  }, []);
+  }, [loadFromStorage]);
 
   useEffect(() => {
-    if (!iframeRef.current || !html) return;
-    iframeRef.current.srcdoc = html;
-  }, [html]);
+    if (!iframeRef.current || !previewHtml) return;
+    iframeRef.current.srcdoc = previewHtml;
+  }, [previewHtml]);
 
   const width = device === "mobile" ? "390px" : device === "tablet" ? "820px" : "100%";
 
@@ -61,10 +57,10 @@ export function PreviewWorkspace() {
 
   return (
     <section className="mx-auto max-w-[1240px] px-4 pb-16 pt-8 sm:px-6">
-      <article className="rounded-2xl border p-3" style={{ borderColor: "var(--sf-border)" }}>
+      <article className="sf-elevate rounded-2xl border p-3" style={{ borderColor: "var(--sf-border)" }}>
         <div className="mb-3 flex flex-col items-center gap-2">
           <p className="text-center text-xs font-medium" style={{ color: "var(--sf-text-muted)" }}>
-            Preview page
+            Preview page — use the site navbar to switch pages
           </p>
           <div className="flex flex-wrap items-center justify-center gap-2">
             <button

@@ -1,33 +1,27 @@
-import { cookies } from "next/headers";
 import { cache } from "react";
-import { verifySessionCookie } from "@/lib/auth/user-store";
+import { auth } from "@/auth";
 
-export const FIREBASE_SESSION_COOKIE = "siteforge_firebase_session";
-const SESSION_EXPIRES_MS = 60 * 60 * 24 * 5 * 1000; // 5 days
+/** Minimal session for server pages (preview / editor). */
+export type AppSessionUser = {
+  uid: string;
+  email: string;
+  email_verified: boolean;
+};
 
-export function getSessionCookieOptions() {
+export const readAppSession = cache(async (): Promise<AppSessionUser | null> => {
+  const session = await auth();
+  if (!session?.user?.email) return null;
+  const uid =
+    (typeof session.firestoreUid === "string" && session.firestoreUid.trim()) ||
+    (typeof session.user.id === "string" && session.user.id.trim()) ||
+    "";
+  if (!uid) return null;
   return {
-    name: FIREBASE_SESSION_COOKIE,
-    maxAgeMs: SESSION_EXPIRES_MS,
-    cookie: {
-      httpOnly: true,
-      secure: process.env.NODE_ENV === "production",
-      sameSite: "lax" as const,
-      path: "/",
-      maxAge: Math.floor(SESSION_EXPIRES_MS / 1000),
-    },
+    uid,
+    email: session.user.email.trim().toLowerCase(),
+    email_verified: (session.user as unknown as { emailVerified?: boolean }).emailVerified === true,
   };
-}
-
-export const readVerifiedFirebaseSession = cache(async () => {
-  const store = await cookies();
-  const raw = store.get(FIREBASE_SESSION_COOKIE)?.value;
-  if (!raw) return null;
-
-  try {
-    const decoded = await verifySessionCookie(raw);
-    return decoded;
-  } catch {
-    return null;
-  }
 });
+
+/** @deprecated Use {@link readAppSession}. Kept for gradual migration of imports. */
+export const readVerifiedFirebaseSession = readAppSession;

@@ -7,14 +7,19 @@ import { PublishSuccessModal } from "@/app/components/dashboard/PublishSuccessMo
 import { syncSessionCreditsFromServer } from "@/lib/client-session-sync";
 import { emitSiteforgeSessionUpdate, SITEFORGE_SESSION_EVENT } from "@/lib/siteforge-credits";
 import { GENERATION_CREDIT_COST } from "@/lib/credit-economy";
-import { isMultiPageWebsiteRequest, MULTI_PAGE_NOT_ALLOWED } from "@/lib/generate-prompt-guards";
 import { freeCreditsBlockedMessageMultiline } from "@/lib/free-credit-blocked-message";
-import { enforceSinglePageAnchors } from "@/lib/sanitize-generated-html";
+import { normalizePageSlug } from "@/lib/generated-site/normalize-slug";
+import { reconcileGeneratedPages } from "@/lib/generated-site/reconcile-pages";
+import { getPreviewHtmlForSlug } from "@/lib/generated-site/sanitize-preview-html";
+import { enforceSinglePageAnchors, sanitizeHtmlForStorage } from "@/lib/sanitize-generated-html";
+import type { SitePageMap } from "@/lib/generated-site/types";
 import {
   claimLegacyProjectIntoUserKeys,
   getProjectLocalStorageKeys,
+  readPagesFromLocalStorage,
   readSessionUidFromLocalStorage,
   subscribeSessionUidChange,
+  writePagesToLocalStorage,
 } from "@/lib/siteforge-project-storage";
 
 const SESSION_KEY = "siteforge-session";
@@ -79,6 +84,9 @@ export function BuilderDashboardView() {
   const [generationElapsedSec, setGenerationElapsedSec] = useState(0);
   const [prompt, setPrompt] = useState(DEFAULT_DASHBOARD_PROMPT);
   const [generatedHtml, setGeneratedHtml] = useState("");
+  const [generatedPages, setGeneratedPages] = useState<SitePageMap>({});
+  const [previewPageSlug, setPreviewPageSlug] = useState("");
+  const [siteAppType, setSiteAppType] = useState<"single" | "multi">("multi");
   const [previewDevice, setPreviewDevice] = useState<PreviewDevice>("pc");
   const [isEditorMode, setIsEditorMode] = useState(false);
   const [draftHtml, setDraftHtml] = useState("");
@@ -157,9 +165,22 @@ export function BuilderDashboardView() {
         const storedHtml = localStorage.getItem(htmlKey) || "";
         const storedPrompt = localStorage.getItem(promptKey) || "";
         if (storedHtml.includes("</html>")) {
-          const safeStoredHtml = enforceSinglePageAnchors(storedHtml);
-          setGeneratedHtml(safeStoredHtml);
-          setDraftHtml(safeStoredHtml);
+          const storedPages = readPagesFromLocalStorage(uid);
+          const rawPages =
+            storedPages && Object.keys(storedPages).length > 0
+              ? storedPages
+              : { "": storedHtml };
+          const pages = reconcileGeneratedPages(rawPages, {
+            userPrompt: storedPrompt || undefined,
+            forceExpand: true,
+          });
+          const multi = Object.keys(pages).length > 1;
+          setGeneratedPages(pages);
+          setSiteAppType(multi ? "multi" : "single");
+          setPreviewPageSlug("");
+          const home = pages[""] ?? Object.values(pages)[0] ?? storedHtml;
+          setGeneratedHtml(home);
+          setDraftHtml(home);
           setPrompt(storedPrompt || DEFAULT_DASHBOARD_PROMPT);
           setStage("ready");
           setIsEditorMode(false);
@@ -186,10 +207,29 @@ export function BuilderDashboardView() {
       const { htmlKey, promptKey } = getProjectLocalStorageKeys(uid);
       localStorage.setItem(htmlKey, generatedHtml);
       localStorage.setItem(promptKey, prompt);
+      if (Object.keys(generatedPages).length > 0) {
+        writePagesToLocalStorage(uid, generatedPages);
+      }
     } catch {
       // ignore localStorage persistence failures
     }
-  }, [stage, generatedHtml, prompt]);
+  }, [stage, generatedHtml, generatedPages, prompt]);
+
+  useEffect(() => {
+    const onPreviewNav = (event: MessageEvent) => {
+      if (event.data?.type !== "sf-preview-nav" || typeof event.data.path !== "string") return;
+      const slug = normalizePageSlug(event.data.path.replace(/^\//, ""));
+      if (slug in generatedPages) {
+        setPreviewPageSlug(slug);
+        return;
+      }
+      if ("" in generatedPages) {
+        setPreviewPageSlug("");
+      }
+    };
+    window.addEventListener("message", onPreviewNav);
+    return () => window.removeEventListener("message", onPreviewNav);
+  }, [generatedPages]);
 
   /** After /editor, restore “Website ready” (prompt + actions) from localStorage. */
   useEffect(() => {
@@ -202,8 +242,16 @@ export function BuilderDashboardView() {
       const storedHtml = localStorage.getItem(htmlKey);
       const storedPrompt = localStorage.getItem(promptKey);
       if (storedHtml?.includes("</html>")) {
-        const safeStoredHtml = enforceSinglePageAnchors(storedHtml);
-        setGeneratedHtml(safeStoredHtml);
+        const storedPages = readPagesFromLocalStorage(uid);
+        if (storedPages && Object.keys(storedPages).length > 0) {
+          const pages = reconcileGeneratedPages(storedPages, {
+            userPrompt: storedPrompt || undefined,
+            forceExpand: true,
+          });
+          setGeneratedPages(pages);
+          setSiteAppType(Object.keys(pages).length > 1 ? "multi" : "single");
+        }
+        setGeneratedHtml(storedHtml);
         if (storedPrompt) setPrompt(storedPrompt);
         setStage("ready");
         setIsEditorMode(false);
@@ -348,16 +396,19 @@ export function BuilderDashboardView() {
   };
 
   useEffect(() => {
-    const html = isEditorMode ? draftHtml : generatedHtml;
+    const pages = Object.keys(generatedPages).length > 0 ? generatedPages : { "": isEditorMode ? draftHtml : generatedHtml };
+    const slug = previewPageSlug in pages ? previewPageSlug : "";
+    const html = getPreviewHtmlForSlug(pages, slug, {
+      multiPage: siteAppType === "multi" || Object.keys(pages).length > 1,
+    });
     if (!html) return;
-    const safeHtml = enforceSinglePageAnchors(html);
     if (previewFrameRef.current) {
-      previewFrameRef.current.srcdoc = safeHtml;
+      previewFrameRef.current.srcdoc = html;
     }
     if (immersivePreview && fullscreenFrameRef.current) {
-      fullscreenFrameRef.current.srcdoc = safeHtml;
+      fullscreenFrameRef.current.srcdoc = html;
     }
-  }, [generatedHtml, draftHtml, isEditorMode, immersivePreview]);
+  }, [generatedHtml, generatedPages, draftHtml, isEditorMode, immersivePreview, previewPageSlug, siteAppType]);
 
   useEffect(() => {
     applyEditorStylesToFrame(previewFrameRef.current);
@@ -375,10 +426,6 @@ export function BuilderDashboardView() {
   const handleGenerateWebsite = async () => {
     if (stage === "generating") return;
     if (!canGenerate) return;
-    if (isMultiPageWebsiteRequest(prompt)) {
-      setGenerationError(MULTI_PAGE_NOT_ALLOWED);
-      return;
-    }
     setGenerationError("");
     setPublishError("");
     setStage("generating");
@@ -423,6 +470,8 @@ export function BuilderDashboardView() {
 
       const contentType = res.headers.get("Content-Type") || "";
       let finalHtml = "";
+      let resultPages: SitePageMap | null = null;
+      let resultAppType: "single" | "multi" = "multi";
       let remainingCredits: number | undefined;
 
       if (contentType.includes("application/x-ndjson") && res.body) {
@@ -441,7 +490,7 @@ export function BuilderDashboardView() {
             if (!line) continue;
             const event = JSON.parse(line) as
               | { type: "progress"; progress: number }
-              | { type: "result"; html: string; remainingCredits?: number }
+              | { type: "result"; html: string; pages?: SitePageMap; appType?: "single" | "multi"; remainingCredits?: number }
               | { type: "error"; error?: string };
 
             if (event.type === "progress") {
@@ -453,6 +502,10 @@ export function BuilderDashboardView() {
             }
             if (event.type === "result") {
               finalHtml = event.html;
+              if (event.pages && Object.keys(event.pages).length > 0) {
+                resultPages = event.pages;
+              }
+              if (event.appType) resultAppType = event.appType;
               remainingCredits = event.remainingCredits;
             }
           }
@@ -490,11 +543,21 @@ export function BuilderDashboardView() {
           // ignore local cache errors
         }
       }
-      setGeneratedHtml(enforceSinglePageAnchors(finalHtml));
+      const rawPages =
+        resultPages && Object.keys(resultPages).length > 0 ? resultPages : { "": finalHtml };
+      const pages = reconcileGeneratedPages(rawPages, {
+        userPrompt: prompt,
+        forceExpand: true,
+      });
+      setGeneratedPages(pages);
+      setSiteAppType(Object.keys(pages).length > 1 ? "multi" : resultAppType);
+      setPreviewPageSlug("");
+      setGeneratedHtml(finalHtml);
       const uid = readSessionUidFromLocalStorage();
       const { htmlKey, promptKey } = getProjectLocalStorageKeys(uid);
       localStorage.setItem(htmlKey, finalHtml);
       localStorage.setItem(promptKey, prompt);
+      writePagesToLocalStorage(uid, pages);
       setProgress(100);
       setPreviewDevice("pc");
       setPreviewModeOn(true);
@@ -581,10 +644,22 @@ export function BuilderDashboardView() {
 
   const handleSaveEditor = () => {
     if (!generatedHtml) return;
+    const isMulti = siteAppType === "multi" || Object.keys(generatedPages).length > 1;
     const liveDoc = previewFrameRef.current?.contentDocument;
     if (liveDoc?.documentElement?.outerHTML) {
-      setGeneratedHtml(enforceSinglePageAnchors(`<!DOCTYPE html>\n${liveDoc.documentElement.outerHTML}`));
-    } else {
+      const raw = `<!DOCTYPE html>\n${liveDoc.documentElement.outerHTML}`;
+      if (isMulti) {
+        const key = previewPageSlug in generatedPages ? previewPageSlug : "";
+        const cleaned = sanitizeHtmlForStorage(raw, true);
+        const nextPages = { ...generatedPages, [key]: cleaned };
+        setGeneratedPages(nextPages);
+        const home = nextPages[""] ?? Object.values(nextPages)[0] ?? cleaned;
+        setGeneratedHtml(home);
+        writePagesToLocalStorage(readSessionUidFromLocalStorage(), nextPages);
+      } else {
+        setGeneratedHtml(enforceSinglePageAnchors(raw));
+      }
+    } else if (!isMulti) {
       setGeneratedHtml(enforceSinglePageAnchors(draftHtml));
     }
     setIsEditorMode(false);
@@ -721,12 +796,14 @@ export function BuilderDashboardView() {
       if (!normalizedPublishName) {
         throw new Error("Please enter username or website name.");
       }
+      const pages = pagesForPublish();
       const res = await fetch("/api/publish", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         credentials: "include",
         body: JSON.stringify({
           html,
+          pages,
           username: normalizedPublishName,
           ...(uid ? { userId: uid } : {}),
         }),
@@ -755,15 +832,21 @@ export function BuilderDashboardView() {
   };
 
   const ensurePreviewHtml = () => {
+    const pages = Object.keys(generatedPages).length > 0 ? generatedPages : { "": (isEditorMode ? draftHtml : generatedHtml) };
+    const slug = previewPageSlug in pages ? previewPageSlug : "";
+    const fromStore = getPreviewHtmlForSlug(pages, slug, {
+      multiPage: siteAppType === "multi" || Object.keys(pages).length > 1,
+    });
+    if (fromStore) return fromStore;
     const frameSrcDoc = previewFrameRef.current?.srcdoc?.trim();
-    if (frameSrcDoc) return enforceSinglePageAnchors(frameSrcDoc);
-    const currentHtml = (isEditorMode ? draftHtml : generatedHtml)?.trim();
-    if (currentHtml) return enforceSinglePageAnchors(currentHtml);
-    const previewDoc = previewFrameRef.current?.contentDocument;
-    if (previewDoc?.documentElement?.outerHTML) {
-      return enforceSinglePageAnchors(`<!DOCTYPE html>${previewDoc.documentElement.outerHTML}`);
-    }
+    if (frameSrcDoc) return frameSrcDoc;
     return "";
+  };
+
+  const pagesForPublish = (): SitePageMap => {
+    if (Object.keys(generatedPages).length > 0) return generatedPages;
+    const html = ensurePreviewHtml();
+    return html ? { "": html } : {};
   };
 
   useEffect(() => {
@@ -796,7 +879,7 @@ export function BuilderDashboardView() {
   return (
     <section className="mx-auto max-w-[1240px] px-4 pb-20 pt-8 sm:px-6 sm:pb-24">
       {(stage === "idle" || stage === "generating") && (
-        <div className="relative min-h-[min(680px,90svh)] overflow-hidden rounded-3xl border p-4 sm:min-h-[680px] sm:p-8" style={{ borderColor: "var(--sf-border)", background: "color-mix(in srgb, var(--sf-card) 72%, transparent)" }}>
+        <div className="sf-elevate relative min-h-[min(680px,90svh)] overflow-hidden rounded-3xl border p-4 sm:min-h-[680px] sm:p-8" style={{ borderColor: "var(--sf-border)", background: "color-mix(in srgb, var(--sf-card) 72%, transparent)" }}>
           <div className="absolute inset-0 blur-md" aria-hidden>
             <div className="sf-floating-thumb left-8 top-10" />
             <div className="sf-floating-thumb right-16 top-24 sf-thumb-delay-2" />

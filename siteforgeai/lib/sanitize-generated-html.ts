@@ -2,7 +2,66 @@
  * Post-processes model HTML for single-page in-iframe preview.
  * Strips <base>, rewrites in-site nav to #anchors, and never leaves full http(s) URLs
  * in <a href> (models often add the user's real domain — those clicks escape the preview).
+ * Also strips loopback URLs (localhost / 127.0.0.1) from assets and CSS so the iframe
+ * does not fire "localhost refused to connect" when users click nav or the page loads.
  */
+
+/** Hosts that must not be requested from inside the preview iframe. */
+const LOOPBACK_HOST = String.raw`(?:localhost|127\.0\.0\.1|0\.0\.0\.0|\[::1\])`;
+const LOOPBACK_ORIGIN = String.raw`https?:\/\/${LOOPBACK_HOST}(?::\d+)?`;
+
+export function stripLoopbackFromStyleAndLinkTags(html: string): string {
+  let out = html;
+  out = out.replace(/<link\b[^>]*>/gi, (tag) => {
+    if (
+      new RegExp(String.raw`\bhref\s*=\s*["']?${LOOPBACK_ORIGIN}`, "i").test(tag) ||
+      new RegExp(String.raw`\bhref\s*=\s*["']?\/\/${LOOPBACK_HOST}`, "i").test(tag)
+    ) {
+      return "";
+    }
+    return tag;
+  });
+  out = out.replace(/<style([^>]*)>([\s\S]*?)<\/style>/gi, (full, attrs, inner) => {
+    if (String(attrs).toLowerCase().includes("sf-spa-guard")) return full;
+    let css = String(inner);
+    css = css.replace(
+      new RegExp(String.raw`url\s*\(\s*(["']?)\s*${LOOPBACK_ORIGIN}[^)"']*\1\s*\)`, "gi"),
+      "none"
+    );
+    css = css.replace(
+      new RegExp(String.raw`url\s*\(\s*(["']?)\s*\/\/${LOOPBACK_HOST}[^)"']*\1\s*\)`, "gi"),
+      "none"
+    );
+    css = css.replace(
+      new RegExp(String.raw`@import\s+["']${LOOPBACK_ORIGIN}[^"']*["']`, "gi"),
+      "/* import removed */"
+    );
+    css = css.replace(
+      new RegExp(String.raw`@import\s+["']\/\/${LOOPBACK_HOST}[^"']*["']`, "gi"),
+      "/* import removed */"
+    );
+    css = css.replace(new RegExp(String.raw`${LOOPBACK_ORIGIN}[^\s)"',;]+`, "gi"), "");
+    return `<style${attrs}>${css}</style>`;
+  });
+  out = out.replace(/<meta\b[^>]*http-equiv\s*=\s*["']?\s*refresh["']?[^>]*>/gi, (tag) => {
+    if (/localhost|127\.0\.0\.1|0\.0\.0\.0|\[::1\]/i.test(tag)) return "";
+    return tag;
+  });
+  return out;
+}
+
+function stripLoopbackUrlAttributes(html: string): string {
+  let out = html;
+  out = out.replace(new RegExp(String.raw`\bhref=(["'])(?:${LOOPBACK_ORIGIN}|//${LOOPBACK_HOST}[^"']*)\1`, "gi"), 'href="#home"');
+  out = out.replace(new RegExp(String.raw`\bsrc=(["'])(?:${LOOPBACK_ORIGIN}|//${LOOPBACK_HOST}[^"']*)\1`, "gi"), 'src="about:blank"');
+  out = out.replace(new RegExp(String.raw`\bdata-src=(["'])${LOOPBACK_ORIGIN}[^"']*\1`, "gi"), 'data-src="about:blank"');
+  out = out.replace(new RegExp(String.raw`\bposter=(["'])${LOOPBACK_ORIGIN}[^"']*\1`, "gi"), 'poster=""');
+  out = out.replace(new RegExp(String.raw`\bdata-href=(["'])${LOOPBACK_ORIGIN}[^"']*\1`, "gi"), 'data-href="#home"');
+  out = out.replace(new RegExp(String.raw`\bformaction=(["'])${LOOPBACK_ORIGIN}[^"']*\1`, "gi"), 'formaction="#contact"');
+  out = out.replace(new RegExp(String.raw`\bcite=(["'])${LOOPBACK_ORIGIN}[^"']*\1`, "gi"), 'cite=""');
+  out = out.replace(new RegExp(String.raw`\baction=(["'])(?:${LOOPBACK_ORIGIN}|//${LOOPBACK_HOST}[^"']*)\1`, "gi"), 'action="#contact"');
+  return out;
+}
 
 const LABEL_TO_ANCHOR: Record<string, string> = {
   home: "#home",
@@ -49,9 +108,17 @@ function anchorForExternalHref(linkText: string, rawHref: string): string {
 
 function anchorFromHrefPath(rawHref: string): string | null {
   try {
-    const cleaned = rawHref.trim();
+    let cleaned = rawHref.trim();
     if (!cleaned || cleaned.startsWith("#")) return null;
-    const u = cleaned.startsWith("//") ? new URL("https:" + cleaned) : new URL(cleaned, "https://placeholder.local");
+    if (cleaned.startsWith("//")) {
+      try {
+        const pr = new URL("https:" + cleaned);
+        cleaned = `${pr.pathname}${pr.hash || ""}`;
+      } catch {
+        return null;
+      }
+    }
+    const u = new URL(cleaned, "https://placeholder.local");
     const combined = `${u.pathname} ${u.hash}`.toLowerCase();
     if (/\b(home|hero|welcome)\b/.test(combined)) return "#home";
     if (/\b(skill|skills)\b/.test(combined)) return "#skills";
@@ -66,20 +133,68 @@ function anchorFromHrefPath(rawHref: string): string | null {
   }
 }
 
+/** Remove single-page scroll/hash scripts so multi-page preview navigates between pages instead of scrolling. */
+export function stripSinglePageOnlyScripts(html: string): string {
+  return html
+    .replace(/<script\b[^>]*\bid\s*=\s*["']sf-spa-scroll["'][^>]*>[\s\S]*?<\/script>/gi, "")
+    .replace(/<style\b[^>]*\bid\s*=\s*["']sf-spa-guard["'][^>]*>[\s\S]*?<\/style>/gi, "");
+}
+
+/** Remove preview/editor injected scripts and styles before saving stored HTML. */
+export function stripInjectedPreviewArtifacts(html: string): string {
+  return stripSinglePageOnlyScripts(html)
+    .replace(/<script\b[^>]*\bid\s*=\s*["']sf-preview-router["'][^>]*>[\s\S]*?<\/script>/gi, "")
+    .replace(/<script\b[^>]*\bid\s*=\s*["']sf-nav-active["'][^>]*>[\s\S]*?<\/script>/gi, "")
+    .replace(/<style\b[^>]*\bid\s*=\s*["']sf-nav-polish["'][^>]*>[\s\S]*?<\/style>/gi, "");
+}
+
+/** Strip loopback URLs; multi-page keeps /slug paths, single-page uses hash anchors. */
+export function stripLoopbackForMultiPage(html: string): string {
+  let out = html;
+  out = out.replace(
+    new RegExp(String.raw`\bhref=(["'])((?:${LOOPBACK_ORIGIN})|(?:\/\/${LOOPBACK_HOST}[^"']*))\1`, "gi"),
+    (_m, q: string, url: string) => {
+      try {
+        const raw = String(url || "");
+        const u = raw.startsWith("//") ? new URL(`https:${raw}`) : new URL(raw);
+        const path = u.pathname && u.pathname !== "/" ? u.pathname : "/";
+        return `href=${q}${path}${q}`;
+      } catch {
+        return `href=${q}/${q}`;
+      }
+    }
+  );
+  out = out.replace(new RegExp(String.raw`\bsrc=(["'])(?:${LOOPBACK_ORIGIN}|//${LOOPBACK_HOST}[^"']*)\1`, "gi"), 'src="about:blank"');
+  out = out.replace(new RegExp(String.raw`\baction=(["'])(?:${LOOPBACK_ORIGIN}|//${LOOPBACK_HOST}[^"']*)\1`, "gi"), 'action="/contact"');
+  return out;
+}
+
+/** Sanitize HTML before localStorage / API storage (strips loopback + injected preview chrome). */
+export function sanitizeHtmlForStorage(html: string, multiPage: boolean): string {
+  let out = stripInjectedPreviewArtifacts(html).replace(/<base\b[^>]*>/gi, "");
+  out = stripLoopbackFromStyleAndLinkTags(out);
+  if (multiPage) {
+    out = stripLoopbackForMultiPage(out);
+    return out;
+  }
+  out = stripLoopbackUrlAttributes(out);
+  return enforceSinglePageAnchors(out);
+}
+
 export function enforceSinglePageAnchors(html: string): string {
   let output = html.replace(/<base\b[^>]*>/gi, "");
+  output = stripLoopbackFromStyleAndLinkTags(output);
+  output = stripLoopbackUrlAttributes(output);
   output = output.replace(/\bhref=(["'])\/[^"']*\1/gi, 'href="#home"');
-  output = output.replace(/\bhref=(["'])https?:\/\/(?:localhost|127\.0\.0\.1)(?::\d+)?[^"']*\1/gi, 'href="#home"');
-  output = output.replace(/\baction=(["'])https?:\/\/(?:localhost|127\.0\.0\.1)(?::\d+)?[^"']*\1/gi, 'action="#home"');
   output = output.replace(/\baction=(["'])\/[^"']*\1/gi, 'action="#home"');
-  output = output.replace(/\bsrc=(["'])https?:\/\/(?:localhost|127\.0\.0\.1)(?::\d+)?[^"']*\1/gi, 'src="about:blank"');
   output = output.replace(/\bsrc=(["'])\/[^"']*\1/gi, 'src="about:blank"');
   output = output.replace(
     /\b(on\w+)=("|')([\s\S]*?)(\2)/gi,
     (full, attr, quote, code, closingQuote) => {
       const script = String(code || "");
       const hasLocalhostNav =
-        /https?:\/\/(?:localhost|127\.0\.0\.1)/i.test(script) ||
+        /https?:\/\/(?:localhost|127\.0\.0\.1|0\.0\.0\.0|\[::1\])/i.test(script) ||
+        /\/\/(?:localhost|127\.0\.0\.1|0\.0\.0\.0|\[::1\])/i.test(script) ||
         /\b(?:window\.)?location\.(?:href|assign|replace)\s*=\s*["'][^"']*\/[^"']*["']/i.test(script) ||
         /\b(?:window\.)?location\.(?:assign|replace)\s*\(\s*["'][^"']*["']\s*\)/i.test(script);
       if (!hasLocalhostNav) return full;
@@ -87,11 +202,11 @@ export function enforceSinglePageAnchors(html: string): string {
     }
   );
   output = output.replace(
-    /\b(?:window\.)?location\.(href|assign|replace)\s*=\s*["']https?:\/\/(?:localhost|127\.0\.0\.1)(?::\d+)?[^"']*["']/gi,
+    /\b(?:window\.)?location\.(href|assign|replace)\s*=\s*["']https?:\/\/(?:localhost|127\.0\.0\.1|0\.0\.0\.0|\[::1\])(?::\d+)?[^"']*["']/gi,
     "location.hash='#home'"
   );
   output = output.replace(
-    /\b(?:window\.)?location\.(assign|replace)\s*\(\s*["']https?:\/\/(?:localhost|127\.0\.0\.1)(?::\d+)?[^"']*["']\s*\)/gi,
+    /\b(?:window\.)?location\.(assign|replace)\s*\(\s*["']https?:\/\/(?:localhost|127\.0\.0\.1|0\.0\.0\.0|\[::1\])(?::\d+)?[^"']*["']\s*\)/gi,
     "location.hash='#home'"
   );
   output = output.replace(
@@ -206,6 +321,9 @@ function isExternalUrl(href){
 }
 function idFromHref(href){
   var h=(href||'').trim().toLowerCase();
+  if(h.slice(0,2)==='//'){
+    try{var pr=new URL('https:'+h);h=(pr.pathname+(pr.hash||'')).toLowerCase();}catch(z){return '';}
+  }
   if(!h)return '';
   if(h.charAt(0)==='#'){return h.slice(1).split('?')[0];}
   if(/mailto:|tel:|javascript:/i.test(h))return '';
@@ -220,6 +338,7 @@ function idFromHref(href){
 }
 function sameApp(href){
   if(!href)return true;
+  if(/localhost|127\\.0\\.0\\.1|0\\.0\\.0\\.0|\\[::1\\]/i.test(href))return false;
   if(href.charAt(0)==='#')return false;
   if(/^mailto:/i.test(href)||/^tel:/i.test(href)||/^javascript:/i.test(href))return false;
   if(isExternalUrl(href))return false;
@@ -256,6 +375,21 @@ links.forEach(function(a){
   }
 });
 document.addEventListener('click',function(e){
+  var el=e.target;
+  while(el&&el.tagName!=='A')el=el.parentElement;
+  if(!el)return;
+  var raw=String(el.getAttribute('href')||'').trim();
+  if(!raw||/^mailto:|^tel:/i.test(raw))return;
+  if(!/localhost|127\\.0\\.0\\.1|0\\.0\\.0\\.0|\\[::1\\]/i.test(raw))return;
+  if(!/^https?:\\/\\//i.test(raw)&&raw.slice(0,2)!=='//')return;
+  e.preventDefault();
+  var id=idFromHref(raw);
+  if(!id){var lb=textOf(el).toLowerCase();id=map[lb]||'home';}
+  el.setAttribute('href','#'+id);
+  var target=document.getElementById(id)||document.getElementById('home');
+  if(target)target.scrollIntoView({behavior:'smooth',block:'start'});
+},true);
+document.addEventListener('click',function(e){
   var t=e.target;
   while(t&&t.tagName!=='A'){t=t.parentElement;}
   if(!t)return;
@@ -280,8 +414,8 @@ document.addEventListener('click',function(e){
   var href='';
   if(n.tagName==='A') href=String(n.getAttribute('href')||'').trim();
   var onclick=String(n.getAttribute('onclick')||'');
-  var badHref=/^https?:\/\/(?:localhost|127\.0\.0\.1)(?::\d+)?/i.test(href)||href.charAt(0)==='/';
-  var badOnclick=/https?:\/\/(?:localhost|127\.0\.0\.1)/i.test(onclick)||/location\.(href|assign|replace)/i.test(onclick);
+  var badHref=/^(?:https?:)?\\/\\/(?:localhost|127\\.0\\.0\\.1|0\\.0\\.0\\.0|\\[::1\\])/i.test(href)||/^https?:\\/\\/(?:localhost|127\\.0\\.0\\.1|0\\.0\\.0\\.0|\\[::1\\])(?::\\d+)?/i.test(href)||href.charAt(0)==='/';
+  var badOnclick=/https?:\\/\\/(?:localhost|127\\.0\\.0\\.1|0\\.0\\.0\\.0|\\[::1\\])/i.test(onclick)||/\\/\\/(?:localhost|127\\.0\\.0\\.1)/i.test(onclick)||/location\\.(href|assign|replace)/i.test(onclick);
   if(badHref||badOnclick){
     e.preventDefault();
     var home=document.getElementById('home');

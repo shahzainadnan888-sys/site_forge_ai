@@ -6,11 +6,16 @@ import { EDIT_APPLY_CREDIT_COST } from "@/lib/credit-economy";
 import {
   claimLegacyProjectIntoUserKeys,
   getProjectLocalStorageKeys,
+  readPagesFromLocalStorage,
   readSessionUidFromLocalStorage,
   subscribeSessionUidChange,
+  writePagesToLocalStorage,
 } from "@/lib/siteforge-project-storage";
 import { emitSiteforgeSessionUpdate } from "@/lib/siteforge-credits";
-import { enforceSinglePageAnchors } from "@/lib/sanitize-generated-html";
+import { normalizePageSlug } from "@/lib/generated-site/normalize-slug";
+import { getPreviewHtmlForSlug } from "@/lib/generated-site/sanitize-preview-html";
+import type { SitePageMap } from "@/lib/generated-site/types";
+import { sanitizeHtmlForStorage } from "@/lib/sanitize-generated-html";
 
 const HYDRATE_DASHBOARD_KEY = "siteforge-hydrate-dashboard";
 const SESSION_KEY = "siteforge-session";
@@ -21,7 +26,9 @@ export function EditorWorkspace() {
   const router = useRouter();
   const iframeRef = useRef<HTMLIFrameElement>(null);
   const fileInputRef = useRef<HTMLInputElement>(null);
-  const [html, setHtml] = useState("");
+  const [pages, setPages] = useState<SitePageMap>({});
+  const [pageSlug, setPageSlug] = useState("");
+  const [isMulti, setIsMulti] = useState(false);
   const [prompt, setPrompt] = useState("");
   const [instruction, setInstruction] = useState("");
   const [attachedImageDataUrl, setAttachedImageDataUrl] = useState<string | null>(null);
@@ -40,7 +47,20 @@ export function EditorWorkspace() {
       }
       const { htmlKey, promptKey } = getProjectLocalStorageKeys(uid);
       const rawHtml = localStorage.getItem(htmlKey) || "";
-      setHtml(rawHtml ? enforceSinglePageAnchors(rawHtml) : "");
+      const storedPages = readPagesFromLocalStorage(uid);
+      if (storedPages && Object.keys(storedPages).some((k) => storedPages[k]?.includes("</html>"))) {
+        const keys = Object.keys(storedPages).filter((k) => storedPages[k]?.includes("</html>"));
+        setPages(storedPages);
+        setIsMulti(keys.length > 1);
+        setPageSlug("");
+      } else if (rawHtml.includes("</html>")) {
+        setPages({ "": rawHtml });
+        setIsMulti(false);
+        setPageSlug("");
+      } else {
+        setPages({});
+        setIsMulti(false);
+      }
       setPrompt(localStorage.getItem(promptKey) || "");
     };
     load();
@@ -48,9 +68,34 @@ export function EditorWorkspace() {
   }, []);
 
   useEffect(() => {
-    if (!iframeRef.current || !html) return;
-    iframeRef.current.srcdoc = html;
-  }, [html]);
+    const onNav = (event: MessageEvent) => {
+      if (event.data?.type !== "sf-preview-nav" || typeof event.data.path !== "string") return;
+      setPageSlug(normalizePageSlug(String(event.data.path).replace(/^\//, "")));
+    };
+    window.addEventListener("message", onNav);
+    return () => window.removeEventListener("message", onNav);
+  }, []);
+
+  const previewHtml = getPreviewHtmlForSlug(pages, pageSlug, { multiPage: isMulti });
+
+  useEffect(() => {
+    if (!iframeRef.current || !previewHtml) return;
+    iframeRef.current.srcdoc = previewHtml;
+  }, [previewHtml]);
+
+  const currentPageRawHtml = (): string => {
+    const live = iframeRef.current?.contentDocument?.documentElement?.outerHTML;
+    const raw = live ? `<!DOCTYPE html>\n${live}` : pages[pageSlug in pages ? pageSlug : ""] ?? pages[""] ?? "";
+    return sanitizeHtmlForStorage(raw, isMulti);
+  };
+
+  const persistPages = (nextPages: SitePageMap, homeHtml?: string) => {
+    const uid = readSessionUidFromLocalStorage();
+    const { htmlKey } = getProjectLocalStorageKeys(uid);
+    writePagesToLocalStorage(uid, nextPages);
+    const home = homeHtml ?? nextPages[""] ?? Object.values(nextPages)[0] ?? "";
+    if (home) localStorage.setItem(htmlKey, home);
+  };
 
   useEffect(() => {
     if (!busy) {
@@ -68,15 +113,14 @@ export function EditorWorkspace() {
   }, [busy]);
 
   const applyAiEdit = async () => {
-    if (!instruction.trim() || !html.trim()) {
+    if (!instruction.trim() || !currentPageRawHtml().trim()) {
       setError("Enter what you want to change, then try again.");
       return;
     }
     setBusy(true);
     setError("");
     try {
-      const liveHtml = iframeRef.current?.contentDocument?.documentElement?.outerHTML;
-      const sourceHtml = liveHtml ? `<!DOCTYPE html>\n${liveHtml}` : html;
+      const sourceHtml = currentPageRawHtml();
       const imageContext = attachedImageDataUrl
         ? `\n\nAttached image context:\n- The user attached an image in chat: "${attachedImageName || "uploaded-image"}".\n- If the user asks to add/replace/update an image, set that target <img> src exactly to this token: __UPLOADED_IMAGE__\n- Do not alter image source unless user asks for image changes.`
         : "";
@@ -85,6 +129,7 @@ export function EditorWorkspace() {
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({
           html: sourceHtml,
+          multiPage: isMulti,
           instruction: `User request (make only the exact requested edits. Do not change anything else):\n${instruction.trim()}${imageContext}`,
         }),
       });
@@ -105,7 +150,7 @@ export function EditorWorkspace() {
           : err?.error;
         throw new Error(msg || "Unable to apply AI edit.");
       }
-      let nextHtml = enforceSinglePageAnchors(data.html);
+      let nextHtml = sanitizeHtmlForStorage(data.html, isMulti);
       if (typeof data.remainingCredits === "number") {
         try {
           const raw = localStorage.getItem(SESSION_KEY);
@@ -126,10 +171,10 @@ export function EditorWorkspace() {
         nextHtml = nextHtml.replace(/__UPLOADED_IMAGE__/g, attachedImageDataUrl);
       }
       setApplyProgress(100);
-      setHtml(nextHtml);
-      const puid = readSessionUidFromLocalStorage();
-      const { htmlKey } = getProjectLocalStorageKeys(puid);
-      localStorage.setItem(htmlKey, nextHtml);
+      const key = pageSlug in pages || pageSlug === "" ? pageSlug : "";
+      const nextPages = { ...pages, [key]: nextHtml };
+      setPages(nextPages);
+      persistPages(nextPages, nextPages[""] ?? nextHtml);
       setInstruction("");
     } catch (e) {
       setError(e instanceof Error ? e.message : "Unable to apply AI edit.");
@@ -151,12 +196,11 @@ export function EditorWorkspace() {
   };
 
   const saveCurrent = () => {
-    const liveHtml = iframeRef.current?.contentDocument?.documentElement?.outerHTML;
-    const next = enforceSinglePageAnchors(liveHtml ? `<!DOCTYPE html>\n${liveHtml}` : html);
-    setHtml(next);
-    const puid = readSessionUidFromLocalStorage();
-    const { htmlKey } = getProjectLocalStorageKeys(puid);
-    localStorage.setItem(htmlKey, next);
+    const next = currentPageRawHtml();
+    const key = pageSlug in pages || pageSlug === "" ? pageSlug : "";
+    const nextPages = { ...pages, [key]: next };
+    setPages(nextPages);
+    persistPages(nextPages, nextPages[""] ?? next);
     setSaveToast("Edits saved successfully.");
     window.setTimeout(() => setSaveToast(""), 2200);
   };
@@ -176,7 +220,7 @@ export function EditorWorkspace() {
   return (
     <section className="mx-auto max-w-[1600px] px-4 pb-16 pt-8 sm:px-6">
       <article
-        className="flex flex-col gap-4 rounded-2xl border p-3 lg:flex-row lg:items-stretch"
+        className="sf-elevate flex flex-col gap-4 rounded-2xl border p-3 lg:flex-row lg:items-stretch"
         style={{ borderColor: "var(--sf-border)" }}
       >
         <aside
@@ -184,7 +228,7 @@ export function EditorWorkspace() {
           style={{ minWidth: "min(100%, 20rem)" }}
         >
           <div
-            className="flex h-full min-h-[280px] flex-col gap-3 rounded-2xl border p-4"
+            className="sf-elevate flex h-full min-h-[280px] flex-col gap-3 rounded-2xl border p-4"
             style={{ borderColor: "var(--sf-border)", background: "color-mix(in srgb, var(--sf-card) 88%, transparent)" }}
           >
             <div className="flex flex-col gap-2 sm:flex-row sm:items-center sm:justify-between sm:gap-3">
@@ -287,7 +331,7 @@ export function EditorWorkspace() {
             <div>
               <p className="text-xs font-medium" style={{ color: "var(--sf-text-muted)" }}>
                 Use the <strong>edit panel</strong> (below on small screens, on the left on large screens) to
-                describe the changes you want. The model updates your full page.
+                describe the changes you want. Use the site navbar to switch pages when editing multi-page sites.
               </p>
               <p className="mt-1 text-xs" style={{ color: "var(--sf-text-muted)" }}>
                 Original prompt: {prompt || "No prompt found."}

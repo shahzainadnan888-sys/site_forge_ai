@@ -1,6 +1,5 @@
-import { cookies } from "next/headers";
 import { NextResponse } from "next/server";
-import { FIREBASE_SESSION_COOKIE } from "@/lib/auth/server-session";
+import { signOut } from "@/auth";
 import { assertSameOrigin, CsrfError } from "@/lib/security/csrf";
 import { enforceRateLimit, RateLimitError } from "@/lib/security/rate-limit";
 
@@ -10,8 +9,7 @@ export async function POST(req: Request) {
   try {
     assertSameOrigin(req);
     enforceRateLimit(req, "auth-logout", { limit: 40, windowMs: 60_000 });
-    const store = await cookies();
-    store.delete(FIREBASE_SESSION_COOKIE);
+    await signOut({ redirect: false });
     return NextResponse.json({ ok: true });
   } catch (error) {
     if (error instanceof CsrfError) {
